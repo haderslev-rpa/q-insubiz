@@ -1,13 +1,15 @@
 [project]
-name = "q-skabelon-object"
+name = "q-insubiz"
 version = "0.1.0"
-description = "object skabelon"
+description = "Insubiz browser- og API-integration"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "automation-server-client",
     "q-haderslev-vbo",
-    "requests>=2.31.0",
+    "playwright>=1.59.0",
+    "python-dotenv",
+    "openpyxl>=3.1.5",
 ]
 
 [tool.uv.sources]
@@ -19,4 +21,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["q_skabelon_object"] #Husk det "ikke" skal være bindestreg
+packages = ["q_insubiz"]
