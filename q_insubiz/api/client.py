@@ -1,10 +1,17 @@
-from typing import Any
+from __future__ import annotations
+
 import json
+import logging
+from typing import Any
+
 from playwright.async_api import APIResponse
 
 from q_insubiz.api.auth_manager import (
     InsubizAuthManager,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class InsubizApiClient:
@@ -18,20 +25,61 @@ class InsubizApiClient:
 
     BASE_URL = "https://start.insubiz.dk"
 
+    REQUEST_TIMEOUT_MS = 30_000
+    DOWNLOAD_TIMEOUT_MS = 60_000
+
+    ALLOWED_METHODS = frozenset(
+        {
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+        }
+    )
+
+    DOWNLOAD_METHODS = frozenset(
+        {
+            "GET",
+            "POST",
+        }
+    )
+
+    JSON_ACCEPT_HEADER = (
+        "application/json, text/plain, */*"
+    )
+
+    DOWNLOAD_ACCEPT_HEADER = (
+        "application/vnd.openxmlformats-"
+        "officedocument.spreadsheetml.sheet, "
+        "application/vnd.ms-excel, "
+        "text/csv, "
+        "application/octet-stream"
+    )
+
     def __init__(
         self,
         auth_manager: InsubizAuthManager,
     ) -> None:
+        if not isinstance(
+            auth_manager,
+            InsubizAuthManager,
+        ):
+            raise TypeError(
+                "auth_manager skal være en "
+                "InsubizAuthManager."
+            )
+
         self._auth_manager = auth_manager
 
+    # --------------------------------------------------
+    # URL og metode
+    # --------------------------------------------------
     def _create_url(
         self,
         endpoint: str,
     ) -> str:
-        """
-        Opretter den komplette URL til API-kaldet.
-        """
-
+        """Opretter den komplette URL til API-kaldet."""
         if not isinstance(endpoint, str):
             raise TypeError(
                 "endpoint skal være en tekstværdi."
@@ -44,112 +92,223 @@ class InsubizApiClient:
                 "endpoint må ikke være tom."
             )
 
-        # Tillad komplette URL'er.
         if normalized_endpoint.startswith(
-            ("https://", "http://")
+            (
+                "https://",
+                "http://",
+            )
         ):
             return normalized_endpoint
 
-        if not normalized_endpoint.startswith("/"):
-            normalized_endpoint = (
-                f"/{normalized_endpoint}"
-            )
-
         return (
-            f"{self.BASE_URL}"
-            f"{normalized_endpoint}"
+            f"{self.BASE_URL}/"
+            f"{normalized_endpoint.lstrip('/')}"
         )
 
-    async def _send_request(
+    def _normalize_method(
         self,
         method: str,
+    ) -> str:
+        """Validerer og normaliserer HTTP-metoden."""
+        if not isinstance(method, str):
+            raise TypeError(
+                "method skal være en tekstværdi."
+            )
+
+        normalized_method = method.strip().upper()
+
+        if normalized_method not in self.ALLOWED_METHODS:
+            raise ValueError(
+                "HTTP-metoden understøttes ikke. "
+                f"Modtog: {method!r}. "
+                "Tilladte metoder: "
+                f"{sorted(self.ALLOWED_METHODS)!r}."
+            )
+
+        return normalized_method
+
+    # --------------------------------------------------
+    # Request-indstillinger
+    # --------------------------------------------------
+    def _create_request_options(
+        self,
+        *,
+        method: str,
+        params: dict[str, Any] | None,
+        json_body: Any,
+        download: bool,
+    ) -> dict[str, Any]:
+        """Opretter options til Playwright fetch()."""
+        headers = {
+            "Accept": (
+                self.DOWNLOAD_ACCEPT_HEADER
+                if download
+                else self.JSON_ACCEPT_HEADER
+            ),
+            "Referer": f"{self.BASE_URL}/",
+        }
+
+        request_options: dict[str, Any] = {
+            "method": method,
+            "params": params,
+            "headers": headers,
+            "timeout": (
+                self.DOWNLOAD_TIMEOUT_MS
+                if download
+                else self.REQUEST_TIMEOUT_MS
+            ),
+        }
+
+        if json_body is not None:
+            headers["Content-Type"] = (
+                "application/json; charset=utf-8"
+            )
+            request_options["data"] = json.dumps(
+                json_body,
+                ensure_ascii=False,
+            )
+
+        return request_options
+
+    # --------------------------------------------------
+    # Fælles transport
+    # --------------------------------------------------
+    async def _send_request(
+        self,
+        *,
+        method: str,
         endpoint: str,
-        json_body: Any = None,
         params: dict[str, Any] | None = None,
+        json_body: Any = None,
+        download: bool = False,
     ) -> APIResponse:
-        """
-        Sender en almindelig API-request gennem den
-        autentificerede Playwright-context.
-        """
+        """Sender ét request gennem den aktive session."""
+        normalized_method = self._normalize_method(
+            method
+        )
+        url = self._create_url(endpoint)
 
         request_context = (
             await self._auth_manager
             .get_request_context()
         )
 
-        url = self._create_url(endpoint)
-
-        print(
-            f"Sender {method} til Insubiz: {url}"
-        )
-
-        return await request_context.fetch(
-            url,
-            method=method,
+        request_options = self._create_request_options(
+            method=normalized_method,
             params=params,
-            data=json_body,
-            headers={
-                "Accept": "application/json",
-                "Referer": "https://start.insubiz.dk/",
-            },
-            timeout=30_000,
+            json_body=json_body,
+            download=download,
         )
 
-    async def _request(
+        logger.info(
+            "Sender %s til Insubiz: %s.",
+            normalized_method,
+            url,
+        )
+
+        try:
+            return await request_context.fetch(
+                url,
+                **request_options,
+            )
+        except Exception as error:
+            logger.exception(
+                "Insubiz-requestet kunne ikke udføres. "
+                "Metode: %s. Endpoint: %s.",
+                normalized_method,
+                endpoint,
+            )
+            raise RuntimeError(
+                "Insubiz-requestet kunne ikke udføres. "
+                f"Metode: {normalized_method}. "
+                f"Endpoint: {endpoint}."
+            ) from error
+
+    async def _send_with_refresh(
         self,
+        *,
         method: str,
         endpoint: str,
         params: dict[str, Any] | None = None,
         json_body: Any = None,
-    ) -> Any:
+        download: bool = False,
+    ) -> APIResponse:
         """
-        Udfører et almindeligt API-kald.
-
-        Ved HTTP 401 eller 403 fornyes login,
-        hvorefter API-kaldet forsøges én gang mere.
+        Sender et request og fornyer sessionen én gang
+        ved HTTP 401 eller 403.
         """
-
         response = await self._send_request(
             method=method,
             endpoint=endpoint,
             params=params,
             json_body=json_body,
+            download=download,
         )
 
-        if response.status in {
+        if response.status not in {
             401,
             403,
         }:
-            print(
-                "Insubiz-sessionen er udløbet. "
-                "Logger ind igen..."
-            )
+            return response
 
-            await self._auth_manager.refresh()
+        logger.warning(
+            "Insubiz-sessionen er udløbet. "
+            "Fornyer login og forsøger requestet igen. "
+            "Metode: %s. Endpoint: %s. "
+            "HTTP-status: %s.",
+            method,
+            endpoint,
+            response.status,
+        )
 
-            response = await self._send_request(
-                method=method,
-                endpoint=endpoint,
-                params=params,
-                json_body=json_body,
-            )
+        await self._auth_manager.refresh()
+
+        return await self._send_request(
+            method=method,
+            endpoint=endpoint,
+            params=params,
+            json_body=json_body,
+            download=download,
+        )
+
+    # --------------------------------------------------
+    # JSON-response
+    # --------------------------------------------------
+    async def _request(
+        self,
+        *,
+        method: str,
+        endpoint: str,
+        params: dict[str, Any] | None = None,
+        json_body: Any = None,
+    ) -> Any:
+        """Udfører et API-kald og returnerer JSON."""
+        normalized_method = self._normalize_method(
+            method
+        )
+
+        response = await self._send_with_refresh(
+            method=normalized_method,
+            endpoint=endpoint,
+            params=params,
+            json_body=json_body,
+            download=False,
+        )
 
         return await self._parse_json_response(
             response=response,
-            method=method,
+            method=normalized_method,
             endpoint=endpoint,
         )
 
     async def _parse_json_response(
         self,
+        *,
         response: APIResponse,
         method: str,
         endpoint: str,
     ) -> Any:
-        """
-        Kontrollerer statuskoden og returnerer JSON.
-        """
-
+        """Kontrollerer statuskoden og returnerer JSON."""
         if not response.ok:
             response_text = await response.text()
 
@@ -164,12 +323,14 @@ class InsubizApiClient:
         if response.status == 204:
             return None
 
+        response_text = await response.text()
+
+        if not response_text.strip():
+            return None
+
         try:
-            return await response.json()
-
-        except Exception as error:
-            response_text = await response.text()
-
+            return json.loads(response_text)
+        except json.JSONDecodeError as error:
             raise RuntimeError(
                 "Insubiz returnerede ikke JSON. "
                 f"Metode: {method}. "
@@ -178,15 +339,15 @@ class InsubizApiClient:
                 f"Response: {response_text[:500]}"
             ) from error
 
+    # --------------------------------------------------
+    # Public JSON-metoder
+    # --------------------------------------------------
     async def get(
         self,
         endpoint: str,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        """
-        Sender et GET-kald til Insubiz.
-        """
-
+        """Sender et GET-kald til Insubiz."""
         return await self._request(
             method="GET",
             endpoint=endpoint,
@@ -199,10 +360,7 @@ class InsubizApiClient:
         json_body: Any = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        """
-        Sender et POST-kald til Insubiz.
-        """
-
+        """Sender et POST-kald til Insubiz."""
         return await self._request(
             method="POST",
             endpoint=endpoint,
@@ -216,10 +374,7 @@ class InsubizApiClient:
         json_body: Any = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        """
-        Sender et PUT-kald til Insubiz.
-        """
-
+        """Sender et PUT-kald til Insubiz."""
         return await self._request(
             method="PUT",
             endpoint=endpoint,
@@ -233,10 +388,7 @@ class InsubizApiClient:
         json_body: Any = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        """
-        Sender et PATCH-kald til Insubiz.
-        """
-
+        """Sender et PATCH-kald til Insubiz."""
         return await self._request(
             method="PATCH",
             endpoint=endpoint,
@@ -250,10 +402,7 @@ class InsubizApiClient:
         json_body: Any = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        """
-        Sender et DELETE-kald til Insubiz.
-        """
-
+        """Sender et DELETE-kald til Insubiz."""
         return await self._request(
             method="DELETE",
             endpoint=endpoint,
@@ -261,58 +410,9 @@ class InsubizApiClient:
             json_body=json_body,
         )
 
-    async def _send_download_request(
-        self,
-        method: str,
-        endpoint: str,
-        params: dict[str, Any] | None = None,
-        json_body: Any = None,
-    ) -> APIResponse:
-        """
-        Sender en request, som forventes at returnere
-        en fil i stedet for JSON.
-        """
-
-        request_context = (
-            await self._auth_manager
-            .get_request_context()
-        )
-
-        headers = {
-            "Accept": (
-                "application/vnd.openxmlformats-"
-                "officedocument.spreadsheetml.sheet, "
-                "application/vnd.ms-excel, "
-                "text/csv, "
-                "application/octet-stream"
-            ),
-            "Referer": "https://start.insubiz.dk/",
-        }
-
-        request_options: dict[str, Any] = {
-            "method": method,
-            "params": params,
-            "headers": headers,
-            "timeout": 60_000,
-        }
-
-        # Content-Type og body medsendes kun,
-        # når endpointet faktisk har en JSON-body.
-        if json_body is not None:
-            headers["Content-Type"] = (
-                "application/json; charset=utf-8"
-            )
-
-            request_options["data"] = json.dumps(
-                json_body,
-                ensure_ascii=False,
-            )
-
-        return await request_context.fetch(
-            self._create_url(endpoint),
-            **request_options,
-        )
-    
+    # --------------------------------------------------
+    # Download
+    # --------------------------------------------------
     async def download(
         self,
         endpoint: str,
@@ -324,45 +424,25 @@ class InsubizApiClient:
         """
         Henter en fil fra Insubiz.
 
-        Output:
-        - Filens binære indhold.
-        - Response-headerens Content-Type.
+        Returnerer filens binære indhold og response-headerens
+        Content-Type.
         """
+        normalized_method = self._normalize_method(
+            method
+        )
 
-        normalized_method = method.strip().upper()
-
-        if normalized_method not in {
-            "GET",
-            "POST",
-        }:
+        if normalized_method not in self.DOWNLOAD_METHODS:
             raise ValueError(
                 "Download-metoden skal være GET eller POST."
             )
 
-        response = await self._send_download_request(
+        response = await self._send_with_refresh(
             method=normalized_method,
             endpoint=endpoint,
             params=params,
             json_body=json_body,
+            download=True,
         )
-
-        if response.status in {
-            401,
-            403,
-        }:
-            print(
-                "Insubiz-sessionen er udløbet. "
-                "Logger ind igen..."
-            )
-
-            await self._auth_manager.refresh()
-
-            response = await self._send_download_request(
-                method=normalized_method,
-                endpoint=endpoint,
-                params=params,
-                json_body=json_body,
-            )
 
         if not response.ok:
             response_text = await response.text()
@@ -375,6 +455,13 @@ class InsubizApiClient:
                 f"Response: {response_text[:500]}"
             )
 
+        content = await response.body()
+
+        if not content:
+            raise RuntimeError(
+                "Insubiz-eksporten returnerede en tom fil."
+            )
+
         content_type = (
             response.headers.get(
                 "content-type",
@@ -383,24 +470,25 @@ class InsubizApiClient:
             or ""
         )
 
-        content = await response.body()
-
-        if not content:
-            raise RuntimeError(
-                "Insubiz-eksporten returnerede en tom fil."
-            )
-
-        print(
+        logger.info(
             "Download gennemført. "
-            f"Content-Type: {content_type or 'ukendt'}. "
-            f"Filstørrelse: {len(content)} bytes."
+            "Endpoint: %s. Content-Type: %s. "
+            "Filstørrelse: %s bytes.",
+            endpoint,
+            content_type or "ukendt",
+            len(content),
         )
 
         return content, content_type
 
+    # --------------------------------------------------
+    # Oprydning
+    # --------------------------------------------------
     async def close(self) -> None:
-        """
-        Lukker browseren og den autentificerede session.
-        """
-
+        """Lukker browseren og den autentificerede session."""
         await self._auth_manager.close()
+
+
+__all__ = [
+    "InsubizApiClient",
+]

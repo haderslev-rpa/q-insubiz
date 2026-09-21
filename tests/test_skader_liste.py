@@ -8,8 +8,8 @@ from q_insubiz.api.auth_manager import (
 from q_insubiz.api.client import (
     InsubizApiClient,
 )
-from q_insubiz.functionality.koeretoejer import (
-    KOERETOEJER_LISTE,
+from q_insubiz.functionality.skader import (
+    SKADER_LISTE,
 )
 
 
@@ -17,48 +17,59 @@ from q_insubiz.functionality.koeretoejer import (
 # Testindstillinger
 # --------------------------------------------------
 HEADLESS = False
-ANTAL_KOERETOEJER_TIL_UDSKRIFT = 25
+ANTAL_SKADER_TIL_UDSKRIFT = 25
 
-CUSTOMER_ID = 0
+CUSTOMER_ID: int | None = None
+CUSTOMER_SEGMENTATION_1 = -1
+CUSTOMER_SEGMENTATION_2 = -1
+CLAIM_GROUP_ID = 0
+STATUS_ID = -2
+CREATED_YEAR_FROM = 0
+CREATED_YEAR_TO = 2026
+INCIDENT_YEAR_FROM = 2025
+INCIDENT_YEAR_TO = 2026
 SHOW_TREE_DATA = False
-ACTIVE_ONLY = False
 
 COLUMNS = [
-    "ChassisNumber",
-    "ContactPerson1",
-    "Registration",
+    "Id",
+    "IncidentNumberInternal",
+    "IncidentType",
+    "IncidentSubType",
+    "IncidentStatus",
+    "Created",
+    "standardCase",
 ]
 
 
 # --------------------------------------------------
 # Resultatkontrol
 # --------------------------------------------------
-def kontroller_koeretoejer(
-    koeretoejer: list[dict[str, Any]],
+def kontroller_skader(
+    skader: list[dict[str, Any]],
 ) -> None:
-    """Kontrollerer køretøjslistens struktur."""
-    if not isinstance(koeretoejer, list):
+    """Kontrollerer skadelistens overordnede struktur."""
+    if not isinstance(skader, list):
         raise AssertionError(
-            "KOERETOEJER_LISTE returnerede et "
-            "uventet format. Forventede en liste, "
-            f"men modtog {type(koeretoejer).__name__}."
+            "SKADER_LISTE returnerede et uventet format. "
+            "Forventede en liste, men modtog "
+            f"{type(skader).__name__}."
         )
 
-    for row_number, koeretoej in enumerate(
-        koeretoejer,
+    for row_number, skade in enumerate(
+        skader,
         start=1,
     ):
-        if not isinstance(koeretoej, dict):
+        if not isinstance(skade, dict):
             raise AssertionError(
-                "Et køretøj havde et uventet format. "
+                "En skade havde et uventet format. "
                 f"Række: {row_number}. "
                 "Forventede en dictionary, men modtog "
-                f"{type(koeretoej).__name__}."
+                f"{type(skade).__name__}."
             )
 
-        if not koeretoej:
+        if not skade:
             raise AssertionError(
-                "Køretøjslisten indeholder en tom række. "
+                "Skadelisten indeholder en tom række. "
                 f"Række: {row_number}."
             )
 
@@ -66,12 +77,12 @@ def kontroller_koeretoejer(
 # --------------------------------------------------
 # Udskrift
 # --------------------------------------------------
-def print_koeretoejer(
-    koeretoejer: list[dict[str, Any]],
+def print_skader(
+    skader: list[dict[str, Any]],
     *,
     max_rows: int,
 ) -> None:
-    """Udskriver et begrænset antal køretøjer som JSON."""
+    """Udskriver et begrænset antal skader som JSON."""
     if isinstance(max_rows, bool) or not isinstance(
         max_rows,
         int,
@@ -85,36 +96,35 @@ def print_koeretoejer(
             "max_rows må ikke være negativ."
         )
 
-    koeretoejer_til_udskrift = koeretoejer[:max_rows]
+    skader_til_udskrift = skader[:max_rows]
 
     print()
     print("=" * 80)
     print(
-        "KØRETØJER, VISER "
-        f"{len(koeretoejer_til_udskrift)} "
-        f"AF {len(koeretoejer)}"
+        "SKADER, VISER "
+        f"{len(skader_til_udskrift)} AF {len(skader)}"
     )
     print("=" * 80)
 
-    if not koeretoejer_til_udskrift:
-        print("Der blev ikke fundet nogen køretøjer.")
+    if not skader_til_udskrift:
+        print("Der blev ikke fundet nogen skader.")
         print("=" * 80)
         return
 
-    for row_number, koeretoej in enumerate(
-        koeretoejer_til_udskrift,
+    for row_number, skade in enumerate(
+        skader_til_udskrift,
         start=1,
     ):
         print()
         print("-" * 80)
         print(
-            f"Køretøj {row_number} "
-            f"af {len(koeretoejer_til_udskrift)}"
+            f"Skade {row_number} "
+            f"af {len(skader_til_udskrift)}"
         )
         print("-" * 80)
         print(
             json.dumps(
-                koeretoej,
+                skade,
                 indent=2,
                 ensure_ascii=False,
                 default=str,
@@ -124,25 +134,22 @@ def print_koeretoejer(
     print()
     print("=" * 80)
     print(
-        f"{len(koeretoejer_til_udskrift)} "
-        "køretøjer blev udskrevet."
+        f"{len(skader_til_udskrift)} "
+        "skader blev udskrevet."
     )
-    print(
-        f"Samlet antal køretøjer: {len(koeretoejer)}"
-    )
+    print(f"Samlet antal skader: {len(skader)}")
     print("=" * 80)
 
 
 # --------------------------------------------------
 # Integrationstest
 # --------------------------------------------------
-async def test_koeretoejer_liste() -> None:
+async def test_skader_liste() -> None:
     """
-    Tester KOERETOEJER_LISTE fra
-    q_insubiz.api.koeretoej.
+    Tester SKADER_LISTE fra q_insubiz.functionality.skader.
 
     Login foretages automatisk ved det første API-kald.
-    Excel-eksporten behandles i koeretoej.py og returneres
+    Excel-eksporten behandles i skader.py og returneres
     til testen som en liste af dictionaries.
     """
     auth_manager = InsubizAuthManager(
@@ -155,23 +162,34 @@ async def test_koeretoejer_liste() -> None:
 
     try:
         print()
-        print("Henter køretøjsliste fra Insubiz...")
+        print("Henter skadeliste fra Insubiz...")
 
-        koeretoejer = await KOERETOEJER_LISTE(
+        skader = await SKADER_LISTE(
             api_client=api_client,
             customer_id=CUSTOMER_ID,
+            customer_segmentation_1=(
+                CUSTOMER_SEGMENTATION_1
+            ),
+            customer_segmentation_2=(
+                CUSTOMER_SEGMENTATION_2
+            ),
+            claim_group_id=CLAIM_GROUP_ID,
+            status_id=STATUS_ID,
+            created_year_from=CREATED_YEAR_FROM,
+            created_year_to=CREATED_YEAR_TO,
+            incident_year_from=INCIDENT_YEAR_FROM,
+            incident_year_to=INCIDENT_YEAR_TO,
             show_tree_data=SHOW_TREE_DATA,
-            active_only=ACTIVE_ONLY,
             columns=COLUMNS,
         )
 
-        kontroller_koeretoejer(
-            koeretoejer=koeretoejer,
+        kontroller_skader(
+            skader=skader,
         )
 
-        print_koeretoejer(
-            koeretoejer=koeretoejer,
-            max_rows=ANTAL_KOERETOEJER_TIL_UDSKRIFT,
+        print_skader(
+            skader=skader,
+            max_rows=ANTAL_SKADER_TIL_UDSKRIFT,
         )
 
         print()
@@ -186,5 +204,5 @@ async def test_koeretoejer_liste() -> None:
 # --------------------------------------------------
 if __name__ == "__main__":
     asyncio.run(
-        test_koeretoejer_liste()
+        test_skader_liste()
     )

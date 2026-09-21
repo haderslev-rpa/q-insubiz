@@ -6,15 +6,12 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "automation-server-client",
-    "q-haderslev-vbo",
-    "playwright>=1.59.0",
-    "python-dotenv",
     "openpyxl>=3.1.5",
+    "playwright>=1.59.0",
 ]
 
 [tool.uv.sources]
 automation-server-client = { git = "https://github.com/odense-rpa/automation-server-client.git", tag = "v0.3.0" }
-q-haderslev-vbo = { git = "https://github.com/haderslev-rpa/q-haderslev-vbo.git", branch = "main" }
 
 [build-system]
 requires = ["hatchling"]
