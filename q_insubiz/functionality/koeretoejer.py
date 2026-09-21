@@ -284,4 +284,3 @@ def _validate_liste_parameters(
         raise TypeError(
             "active_only skal være True eller False."
         )
-
