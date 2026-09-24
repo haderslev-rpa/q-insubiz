@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import Any
+from typing import Any, Protocol
 
 from automation_server_client import (
     AutomationServer,
     Credential,
 )
 from playwright.async_api import (
+    Locator,
     Page,
     TimeoutError as PlaywrightTimeoutError,
 )
@@ -26,30 +26,40 @@ logger = logging.getLogger(__name__)
 LOGIN_URL = "https://start.insubiz.dk/login"
 CREDENTIAL_NAME = "Q_INSUBIZ"
 
-# Navigationen fik tidligere kun 30 sekunder.
-# Den får nu op til 90 sekunder pr. forsøg.
 NAVIGATION_TIMEOUT_MS = 90_000
-
-# Antal kontrollerede navigationsforsøg.
 NAVIGATION_MAX_FORSOEG = 3
-
-# Pause mellem navigationsforsøg.
-# Pausen multipliceres med forsøgsnummeret.
 NAVIGATION_RETRY_PAUSE_MS = 3_000
 
-# Timeout til formularfelter.
 ELEMENT_TIMEOUT_MS = 30_000
-
-# Timeout efter klik på login.
 LOGIN_TIMEOUT_MS = 60_000
-
 FIELD_PAUSE_MS = 250
 LOGIN_PAUSE_MS = 1_000
+
+SCREENSHOT_NAME_PREFIX = "insubiz_playwright_error"
+
+
+# --------------------------------------------------
+# RECORDER-INTERFACE
+# --------------------------------------------------
+
+
+class PlaywrightRecorder(Protocol):
+    """Minimalt interface til screenshot og SharePoint-upload."""
+
+    async def screenshot(
+        self,
+        page: Page,
+        name: str,
+        always: bool = False,
+    ) -> Any:
+        """Gemmer et screenshot og forsøger upload til SharePoint."""
+        ...
 
 
 # --------------------------------------------------
 # CREDENTIALS FRA DATA (JSON)
 # --------------------------------------------------
+
 
 def _get_credentials() -> tuple[str, str]:
     """Henter Insubiz-login fra credentialen Q_INSUBIZ."""
@@ -115,20 +125,265 @@ def _get_credentials() -> tuple[str, str]:
 
 
 # --------------------------------------------------
-# NAVIGATION
+# PUBLIC LOGIN
 # --------------------------------------------------
+
+
+async def launch_insubiz(
+    page: Page,
+    recorder: PlaywrightRecorder | None = None,
+) -> None:
+    """Åbner Insubiz og logger ind via brugerfladen.
+
+    Credential- og Automation Server-fejl udløser ikke screenshot.
+    Screenshot forsøges kun ved fejl i det konkrete Playwright/UI-flow.
+    """
+    if page is None:
+        raise ValueError(
+            "page må ikke være None."
+        )
+
+    if page.is_closed():
+        raise RuntimeError(
+            "Insubiz kunne ikke åbnes, fordi "
+            "Playwright-siden er lukket."
+        )
+
+    # Ikke en UI- eller Playwright-handling.
+    # Fejl her skal derfor ikke udløse screenshot.
+    email, password = _get_credentials()
+
+    try:
+        await _udfoer_login_via_ui(
+            page=page,
+            email=email,
+            password=password,
+        )
+
+    except Exception as error:
+        # Kun fejl fra UI/Playwright-flowet kan nå denne fejlgren.
+        await _tag_screenshot_ved_playwright_fejl(
+            page=page,
+            recorder=recorder,
+            error=error,
+        )
+
+        error_message = await _get_error_message(
+            page=page,
+        )
+
+        message = _opret_ui_fejlbesked(
+            page=page,
+            error=error,
+            error_message=error_message,
+        )
+
+        logger.exception(
+            message
+        )
+
+        raise RuntimeError(
+            message
+        ) from error
+
+
+# --------------------------------------------------
+# PLAYWRIGHT/UI-FLOW
+# --------------------------------------------------
+
+
+async def _udfoer_login_via_ui(
+    *,
+    page: Page,
+    email: str,
+    password: str,
+) -> None:
+    """Udfører hele loginflowet gennem Insubiz-brugerfladen."""
+    await _aabn_login_med_genforsoeg(
+        page=page,
+    )
+
+    email_input = page.locator(
+        InsubizSelectors.EMAIL_INPUT
+    ).first
+
+    await email_input.wait_for(
+        state="visible",
+        timeout=ELEMENT_TIMEOUT_MS,
+    )
+
+    login_form = email_input.locator(
+        "xpath=ancestor::form[1]"
+    )
+
+    await login_form.wait_for(
+        state="visible",
+        timeout=ELEMENT_TIMEOUT_MS,
+    )
+
+    password_input = login_form.locator(
+        InsubizSelectors.PASSWORD_INPUT
+    ).first
+
+    await password_input.wait_for(
+        state="visible",
+        timeout=ELEMENT_TIMEOUT_MS,
+    )
+
+    await _udfyld_emailfelt(
+        page=page,
+        email_input=email_input,
+        email=email,
+    )
+
+    await _udfyld_adgangskodefelt(
+        page=page,
+        password_input=password_input,
+        password=password,
+    )
+
+    await _udfoer_loginhandling(
+        page=page,
+        login_form=login_form,
+        password_input=password_input,
+    )
+
+    await _vent_paa_gennemfoert_login(
+        page=page,
+        email_input=email_input,
+    )
+
+    logger.info(
+        "Login i Insubiz blev gennemført. "
+        "URL: %s.",
+        page.url,
+    )
+
+
+async def _udfyld_emailfelt(
+    *,
+    page: Page,
+    email_input: Locator,
+    email: str,
+) -> None:
+    """Udfylder og kontrollerer e-mailfeltet via Playwright."""
+    await email_input.fill(
+        email
+    )
+
+    await page.wait_for_timeout(
+        FIELD_PAUSE_MS
+    )
+
+    actual_email = (
+        await email_input.input_value()
+    ).strip()
+
+    if actual_email != email:
+        raise RuntimeError(
+            "E-mailadressen blev ikke indsat "
+            "korrekt i Insubiz-brugerfladen. "
+            f"Forventet længde: {len(email)}. "
+            f"Indsat længde: {len(actual_email)}."
+        )
+
+    await email_input.press(
+        "Tab"
+    )
+
+    await page.wait_for_timeout(
+        FIELD_PAUSE_MS
+    )
+
+
+async def _udfyld_adgangskodefelt(
+    *,
+    page: Page,
+    password_input: Locator,
+    password: str,
+) -> None:
+    """Udfylder og kontrollerer adgangskodefeltet via Playwright."""
+    await password_input.fill(
+        password
+    )
+
+    await page.wait_for_timeout(
+        FIELD_PAUSE_MS
+    )
+
+    actual_password = (
+        await password_input.input_value()
+    )
+
+    if actual_password != password:
+        raise RuntimeError(
+            "Adgangskoden blev ikke indsat "
+            "korrekt i Insubiz-brugerfladen. "
+            f"Forventet længde: {len(password)}. "
+            f"Indsat længde: {len(actual_password)}."
+        )
+
+
+async def _udfoer_loginhandling(
+    *,
+    page: Page,
+    login_form: Locator,
+    password_input: Locator,
+) -> None:
+    """Klikker på login-knappen eller bruger Enter som fallback."""
+    login_button = login_form.locator(
+        InsubizSelectors.LOGIN_BUTTON
+    ).first
+
+    if await login_button.count() > 0:
+        await login_button.wait_for(
+            state="visible",
+            timeout=ELEMENT_TIMEOUT_MS,
+        )
+
+        if await login_button.is_disabled():
+            error_message = await _get_error_message(
+                page=page,
+            )
+
+            message = (
+                "Login-knappen er deaktiveret "
+                "efter udfyldning af loginformularen."
+            )
+
+            if error_message:
+                message += (
+                    " Fejlbesked fra Insubiz: "
+                    f"{error_message}"
+                )
+
+            raise RuntimeError(
+                message
+            )
+
+        await login_button.click()
+        return
+
+    logger.warning(
+        "Login-knappen blev ikke fundet. "
+        "Forsøger login med Enter."
+    )
+
+    await password_input.press(
+        "Enter"
+    )
+
+
+# --------------------------------------------------
+# NAVIGATION MED GENFORSØG
+# --------------------------------------------------
+
 
 async def _aabn_login_med_genforsoeg(
     *,
     page: Page,
 ) -> None:
-    """Åbner Insubiz-login med kontrollerede genforsøg."""
-    if page.is_closed():
-        raise RuntimeError(
-            "Insubiz-login kunne ikke åbnes, fordi "
-            "Playwright-siden er lukket."
-        )
-
+    """Åbner Insubiz-login med kontrollerede Playwright-genforsøg."""
     sidste_fejl: Exception | None = None
 
     for forsoeg in range(
@@ -157,12 +412,6 @@ async def _aabn_login_med_genforsoeg(
                 timeout=NAVIGATION_TIMEOUT_MS,
             )
 
-            if page.is_closed():
-                raise RuntimeError(
-                    "Playwright-siden blev lukket efter "
-                    "navigationen til Insubiz."
-                )
-
             http_status = (
                 response.status
                 if response is not None
@@ -175,7 +424,7 @@ async def _aabn_login_med_genforsoeg(
             ):
                 raise RuntimeError(
                     "Insubiz-login returnerede en "
-                    "HTTP-fejl. "
+                    "HTTP-fejl i browseren. "
                     f"HTTP-status: {http_status}. "
                     f"URL: {page.url}."
                 )
@@ -189,7 +438,6 @@ async def _aabn_login_med_genforsoeg(
                 http_status,
                 page.url,
             )
-
             return
 
         except PlaywrightTimeoutError as error:
@@ -198,11 +446,9 @@ async def _aabn_login_med_genforsoeg(
             logger.warning(
                 "Timeout ved åbning af Insubiz-login. "
                 "Forsøg %s af %s. "
-                "Timeout: %s sekunder. "
                 "Aktuel URL: %s.",
                 forsoeg,
                 NAVIGATION_MAX_FORSOEG,
-                NAVIGATION_TIMEOUT_MS // 1_000,
                 page.url,
             )
 
@@ -214,9 +460,8 @@ async def _aabn_login_med_genforsoeg(
             sidste_fejl = error
 
             logger.warning(
-                "Insubiz-login kunne ikke åbnes. "
-                "Forsøg %s af %s. "
-                "Fejl: %s",
+                "Insubiz-login kunne ikke åbnes i browseren. "
+                "Forsøg %s af %s. Fejl: %s",
                 forsoeg,
                 NAVIGATION_MAX_FORSOEG,
                 error,
@@ -241,14 +486,13 @@ async def _aabn_login_med_genforsoeg(
         )
 
     raise RuntimeError(
-        "Insubiz-login kunne ikke indlæses efter "
-        f"{NAVIGATION_MAX_FORSOEG} forsøg. "
-        f"Timeout pr. forsøg: "
+        "Insubiz-login kunne ikke indlæses i browseren "
+        f"efter {NAVIGATION_MAX_FORSOEG} forsøg. "
+        "Timeout pr. forsøg: "
         f"{NAVIGATION_TIMEOUT_MS // 1_000} sekunder. "
         f"Sidste URL: {page.url}. "
-        f"Sidste fejl: "
-        f"{type(sidste_fejl).__name__}: "
-        f"{sidste_fejl}"
+        "Sidste fejl: "
+        f"{type(sidste_fejl).__name__}: {sidste_fejl}"
     ) from sidste_fejl
 
 
@@ -266,213 +510,23 @@ async def _stop_eventuel_navigation(
         )
     except Exception:
         logger.debug(
-            "En hængende navigation kunne ikke "
-            "stoppes med window.stop().",
+            "En hængende browsernavigation kunne "
+            "ikke stoppes med window.stop().",
             exc_info=True,
         )
 
 
 # --------------------------------------------------
-# LOGIN
+# LOGINRESULTAT
 # --------------------------------------------------
-
-async def launch_insubiz(
-    page: Page,
-) -> None:
-    """Åbner Insubiz og logger ind."""
-    if page is None:
-        raise ValueError(
-            "page må ikke være None."
-        )
-
-    if page.is_closed():
-        raise RuntimeError(
-            "Insubiz kunne ikke åbnes, fordi "
-            "Playwright-siden er lukket."
-        )
-
-    email, password = _get_credentials()
-
-    try:
-        await _aabn_login_med_genforsoeg(
-            page=page,
-        )
-
-        email_input = page.locator(
-            InsubizSelectors.EMAIL_INPUT
-        ).first
-
-        await email_input.wait_for(
-            state="visible",
-            timeout=ELEMENT_TIMEOUT_MS,
-        )
-
-        login_form = email_input.locator(
-            "xpath=ancestor::form[1]"
-        )
-
-        await login_form.wait_for(
-            state="visible",
-            timeout=ELEMENT_TIMEOUT_MS,
-        )
-
-        password_input = login_form.locator(
-            InsubizSelectors.PASSWORD_INPUT
-        ).first
-
-        await password_input.wait_for(
-            state="visible",
-            timeout=ELEMENT_TIMEOUT_MS,
-        )
-
-        await email_input.fill(
-            email
-        )
-
-        await page.wait_for_timeout(
-            FIELD_PAUSE_MS
-        )
-
-        actual_email = (
-            await email_input.input_value()
-        ).strip()
-
-        if actual_email != email:
-            raise RuntimeError(
-                "E-mailadressen blev ikke indsat "
-                "korrekt. "
-                f"Forventet længde: {len(email)}. "
-                f"Indsat længde: "
-                f"{len(actual_email)}."
-            )
-
-        await email_input.press(
-            "Tab"
-        )
-
-        await page.wait_for_timeout(
-            FIELD_PAUSE_MS
-        )
-
-        await password_input.fill(
-            password
-        )
-
-        await page.wait_for_timeout(
-            FIELD_PAUSE_MS
-        )
-
-        actual_password = (
-            await password_input.input_value()
-        )
-
-        if actual_password != password:
-            raise RuntimeError(
-                "Adgangskoden blev ikke indsat "
-                "korrekt. "
-                f"Forventet længde: "
-                f"{len(password)}. "
-                f"Indsat længde: "
-                f"{len(actual_password)}."
-            )
-
-        login_button = login_form.locator(
-            InsubizSelectors.LOGIN_BUTTON
-        ).first
-
-        if await login_button.count() > 0:
-            await login_button.wait_for(
-                state="visible",
-                timeout=ELEMENT_TIMEOUT_MS,
-            )
-
-            if await login_button.is_disabled():
-                error_message = (
-                    await _get_error_message(
-                        page=page,
-                    )
-                )
-
-                message = (
-                    "Login-knappen er deaktiveret "
-                    "efter udfyldning af "
-                    "loginformularen."
-                )
-
-                if error_message:
-                    message += (
-                        " Fejlbesked fra Insubiz: "
-                        f"{error_message}"
-                    )
-
-                raise RuntimeError(
-                    message
-                )
-
-            await login_button.click()
-
-        else:
-            logger.warning(
-                "Login-knappen blev ikke fundet. "
-                "Forsøger login med Enter."
-            )
-
-            await password_input.press(
-                "Enter"
-            )
-
-        await _vent_paa_gennemfoert_login(
-            page=page,
-            email_input=email_input,
-        )
-
-        logger.info(
-            "Login i Insubiz blev gennemført. "
-            "URL: %s.",
-            page.url,
-        )
-
-    except PlaywrightTimeoutError as error:
-        error_message = (
-            await _get_error_message(
-                page=page,
-            )
-        )
-
-        message = (
-            "Login i Insubiz fik timeout efter "
-            "navigationen til login-siden."
-        )
-
-        if error_message:
-            message += (
-                " Fejlbesked fra Insubiz: "
-                f"{error_message}"
-            )
-
-        message += (
-            f" URL: {page.url}. "
-            f"Element-timeout: "
-            f"{ELEMENT_TIMEOUT_MS // 1_000} sekunder. "
-            f"Login-timeout: "
-            f"{LOGIN_TIMEOUT_MS // 1_000} sekunder."
-        )
-
-        logger.exception(
-            message
-        )
-
-        raise RuntimeError(
-            message
-        ) from error
 
 
 async def _vent_paa_gennemfoert_login(
     *,
     page: Page,
-    email_input: Any,
+    email_input: Locator,
 ) -> None:
-    """Venter på at loginformularen forsvinder."""
+    """Venter på, at loginformularen forsvinder fra UI'et."""
     try:
         await email_input.wait_for(
             state="hidden",
@@ -480,10 +534,8 @@ async def _vent_paa_gennemfoert_login(
         )
 
     except PlaywrightTimeoutError as error:
-        error_message = (
-            await _get_error_message(
-                page=page,
-            )
+        error_message = await _get_error_message(
+            page=page,
         )
 
         message = (
@@ -499,7 +551,7 @@ async def _vent_paa_gennemfoert_login(
 
         message += (
             f" URL: {page.url}. "
-            f"Timeout: "
+            "Timeout: "
             f"{LOGIN_TIMEOUT_MS // 1_000} sekunder."
         )
 
@@ -513,17 +565,127 @@ async def _vent_paa_gennemfoert_login(
 
 
 # --------------------------------------------------
-# FEJLBESKED
+# SCREENSHOT KUN VED PLAYWRIGHT/UI-FEJL
 # --------------------------------------------------
+
+
+async def _tag_screenshot_ved_playwright_fejl(
+    *,
+    page: Page,
+    recorder: PlaywrightRecorder | None,
+    error: BaseException,
+) -> None:
+    """Tager screenshot ved fejl i det konkrete Playwright/UI-flow."""
+    if recorder is None:
+        logger.warning(
+            "Screenshot ved Playwright/UI-fejl blev ikke "
+            "taget, fordi recorder ikke blev sendt med."
+        )
+        return
+
+    if page.is_closed():
+        logger.warning(
+            "Screenshot ved Playwright/UI-fejl blev ikke "
+            "taget, fordi Playwright-siden er lukket."
+        )
+        return
+
+    screenshot_name = (
+        f"{SCREENSHOT_NAME_PREFIX}_"
+        f"{_normaliser_screenshot_navn(type(error).__name__)}"
+    )
+
+    try:
+        await recorder.screenshot(
+            page=page,
+            name=screenshot_name,
+            always=True,
+        )
+
+        logger.info(
+            "Screenshot fra Playwright/UI-fejl blev "
+            "gemt lokalt og forsøgt uploadet til SharePoint."
+        )
+
+    except Exception:
+        # Screenshot eller SharePoint må aldrig skjule UI-fejlen.
+        logger.exception(
+            "Screenshot eller SharePoint-upload fejlede "
+            "under håndtering af en Playwright/UI-fejl."
+        )
+
+
+def _normaliser_screenshot_navn(
+    value: str,
+) -> str:
+    """Normaliserer en tekst til et sikkert screenshotnavn."""
+    normalized_value = str(
+        value
+    ).strip()
+
+    for character in (
+        " ",
+        "/",
+        "\\",
+        ":",
+        ";",
+    ):
+        normalized_value = normalized_value.replace(
+            character,
+            "_",
+        )
+
+    return normalized_value or "UkendtFejl"
+
+
+# --------------------------------------------------
+# UI-FEJLBESKED
+# --------------------------------------------------
+
+
+def _opret_ui_fejlbesked(
+    *,
+    page: Page,
+    error: BaseException,
+    error_message: str,
+) -> str:
+    """Opretter en fejlbesked for Playwright/UI-loginflowet."""
+    if isinstance(error, PlaywrightTimeoutError):
+        message = "Login i Insubiz fik Playwright-timeout."
+    else:
+        message = "Login via Insubiz-brugerfladen fejlede."
+
+    if error_message:
+        message += (
+            " Fejlbesked fra Insubiz: "
+            f"{error_message}"
+        )
+
+    current_url = (
+        page.url
+        if not page.is_closed()
+        else "[siden er lukket]"
+    )
+
+    message += (
+        f" URL: {current_url}. "
+        f"Fejltype: {type(error).__name__}. "
+        f"Fejl: {error}"
+    )
+
+    return message
+
+
+# --------------------------------------------------
+# SYNLIG UI-FEJLBESKED
+# --------------------------------------------------
+
 
 async def _get_error_message(
     *,
     page: Page,
 ) -> str:
     """Finder en synlig fejlbesked på login-siden."""
-    if page is None:
-        return ""
-
     if page.is_closed():
         return ""
 
@@ -538,24 +700,22 @@ async def _get_error_message(
         if not await error_locator.is_visible():
             return ""
 
-        error_message = (
-            await error_locator.inner_text()
-        )
+        error_message = await error_locator.inner_text()
 
         return error_message.strip()
 
     except Exception:
         logger.debug(
-            "En eventuel loginfejl kunne ikke "
+            "En eventuel UI-fejlbesked kunne ikke "
             "aflæses.",
             exc_info=True,
         )
-
         return ""
 
 
 __all__ = [
     "CREDENTIAL_NAME",
     "LOGIN_URL",
+    "PlaywrightRecorder",
     "launch_insubiz",
 ]

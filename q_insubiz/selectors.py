@@ -41,7 +41,7 @@ class SkadeSelectors:
     # --------------------------------------------------
     # Opret dokument fra skabelon
     # --------------------------------------------------
-    OPRET_DOKUMENT_FRA_SKABELON = (
+    aabn_dokumentdialog = (
         'button[aria-haspopup="dialog"]'
         ':has(svg path[d^="M14 2H6"])'
     )

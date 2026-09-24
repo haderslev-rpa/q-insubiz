@@ -8,10 +8,14 @@ dependencies = [
     "automation-server-client",
     "openpyxl>=3.1.5",
     "playwright>=1.59.0",
+    "q-haderslev-vbo",
+
 ]
 
 [tool.uv.sources]
 automation-server-client = { git = "https://github.com/odense-rpa/automation-server-client.git", tag = "v0.3.0" }
+q-haderslev_vbo = { git = "https://github.com/haderslev-rpa/q-haderslev-vbo.git", branch = "main" }
+
 
 [build-system]
 requires = ["hatchling"]

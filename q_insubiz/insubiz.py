@@ -7,11 +7,7 @@ from typing import Any
 from playwright.async_api import Locator, Page
 
 from q_insubiz.functionality.launch import launch_insubiz
-from q_insubiz.functionality.skader import (
-    aabn_dokumentdialog,
-    gem_dokument_fra_skabelon,
-    vaelg_dokumentskabelon,
-)
+from q_insubiz.functionality import skader as skade_funktioner
 from q_insubiz.selectors import InsubizSelectors
 
 
@@ -143,16 +139,6 @@ class Insubiz:
 
         return screenshot_path
 
-    async def aabn_dokumentdialog(self) -> Locator:
-        """Åbner dialogen Opret dokument fra skabelon."""
-        self._ensure_page_open(
-            operation="Åbn dokumentdialog",
-        )
-
-        return await aabn_dokumentdialog(
-            page=self._page,
-        )
-
     async def vaelg_dokumentskabelon(
         self,
         *,
@@ -164,7 +150,7 @@ class Insubiz:
             operation="Vælg dokumentskabelon",
         )
 
-        return await vaelg_dokumentskabelon(
+        return await skade_funktioner.vaelg_dokumentskabelon(
             page=self._page,
             dialog=dialog,
             skabelon_navn=skabelon_navn,
@@ -180,7 +166,7 @@ class Insubiz:
             operation="Gem dokument fra skabelon",
         )
 
-        await gem_dokument_fra_skabelon(
+        await skade_funktioner.gem_dokument_fra_skabelon(
             page=self._page,
             dialog=dialog,
         )
@@ -198,7 +184,9 @@ class Insubiz:
             operation="Opret dokument fra skabelon",
         )
 
-        dialog = await self.aabn_dokumentdialog()
+        dialog = await skade_funktioner.opret_dokument_fra_skabelon(
+            page=self._page,
+        )
 
         valgt_skabelon = await self.vaelg_dokumentskabelon(
             dialog=dialog,

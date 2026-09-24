@@ -31,6 +31,9 @@ UI_WAIT_MS = 1_500
 SKADER_LISTE_ENDPOINT = "/ImportExport/ExportIncidents"
 GET_INCIDENT_BY_ID_ENDPOINT = "/IncidentHandling/GetIncidentById"
 UPDATE_INCIDENT_FIELDS_ENDPOINT = "/IncidentHandling/UpdateIncidentFields"
+VALIDATE_INCIDENT_FOR_SEND_TO_EASY_ENDPOINT = (
+    "/IncidentHandling/ValidateIncidentForSendToEasy"
+)
 SEND_INCIDENT_TO_EASY_ENDPOINT = "/IncidentHandling/SendIncidentToEasy"
 
 
@@ -41,8 +44,8 @@ EASY_STATUS_GODKENDT = "Godkendt hos EASY"
 EASY_STATUS_AFSENDT_AFVENTER = "Afsendt til EASY, afventer"
 EASY_STATUS_ALLEREDE_SENDT = frozenset(
     {
-        EASY_STATUS_GODKENDT.casefold(),
-        EASY_STATUS_AFSENDT_AFVENTER.casefold(),
+        " ".join(EASY_STATUS_GODKENDT.split()).casefold(),
+        " ".join(EASY_STATUS_AFSENDT_AFVENTER.split()).casefold(),
     }
 )
 
@@ -222,58 +225,266 @@ async def send_skade_til_easy(
     api_client: InsubizApiClient,
     skade_id: int | str,
 ) -> SendSkadeTilEasyResultat:
-    """Sender kun skaden, hvis EASY-status tillader det."""
+    """Validerer skaden og sender den til EASY, hvis det er nødvendigt.
+
+    Flowet følger Insubiz-brugerfladen:
+
+    1. Hent skaden og kontrollér EASY-status.
+    2. Kald ValidateIncidentForSendToEasy.
+    3. Kald SendIncidentToEasy, hvis valideringen accepteres.
+    4. Hent skaden igen og kontrollér EASY-status/reference.
+
+    En serverfejl accepteres kun som gennemført afsendelse, hvis den
+    efterfølgende kontrol viser en sendt EASY-status eller en reference.
+    """
     normalized_skade_id = _normalize_skade_id(skade_id)
-    incident = await hent_skade_via_id(
+
+    incident_foer = await hent_skade_via_id(
         api_client=api_client,
         skade_id=normalized_skade_id,
     )
-    easy_status = _extract_easy_status_text(incident=incident)
-    easy_reference = _extract_easy_reference(incident=incident)
+    easy_status_foer = _extract_easy_status_text(
+        incident=incident_foer,
+    )
+    easy_reference_foer = _extract_easy_reference(
+        incident=incident_foer,
+    )
 
-    if _er_allerede_sendt_til_easy(easy_status=easy_status):
+    logger.info(
+        "Kontrollerer EASY-status før validering og afsendelse. "
+        "Skade-id: %s. EASY-status: %r. "
+        "EASY-reference fundet: %s.",
+        normalized_skade_id,
+        easy_status_foer,
+        bool(easy_reference_foer),
+    )
+
+    if _er_allerede_sendt_til_easy(
+        easy_status=easy_status_foer,
+    ):
         return SendSkadeTilEasyResultat(
             skade_id=normalized_skade_id,
-            easy_status_foer=easy_status,
-            easy_reference=easy_reference,
+            easy_status_foer=easy_status_foer,
+            easy_reference=easy_reference_foer,
             allerede_sendt=True,
             sendt_nu=False,
             besked=(
                 "Skaden er allerede sendt til EASY. "
-                f"Aktuel EASY-status: {easy_status}."
+                f"Aktuel EASY-status: {easy_status_foer}."
             ),
             afsendelses_response=None,
         )
 
+    validation_response = await valider_skade_foer_easy(
+        api_client=api_client,
+        skade_id=normalized_skade_id,
+    )
+
+    logger.info(
+        "EASY-valideringen blev accepteret. "
+        "Skade-id: %s. Response: %r.",
+        normalized_skade_id,
+        validation_response,
+    )
+
     try:
         response = await api_client.get(
             endpoint=SEND_INCIDENT_TO_EASY_ENDPOINT,
-            params={"id": normalized_skade_id},
+            params={
+                "id": normalized_skade_id,
+            },
         )
-    except Exception as error:
-        logger.exception(
-            "Afsendelse til EASY fejlede. Skade-id: %s.",
-            normalized_skade_id,
+    except Exception as send_error:
+        return await _haandter_easy_sendefejl(
+            api_client=api_client,
+            skade_id=normalized_skade_id,
+            easy_status_foer=easy_status_foer,
+            easy_reference_foer=easy_reference_foer,
+            validation_response=validation_response,
+            send_error=send_error,
         )
-        raise RuntimeError(
-            "Skaden kunne ikke sendes til EASY. "
-            f"Skade-id: {normalized_skade_id}."
-        ) from error
 
-    normalized_response = _normalize_send_response(response=response)
+    normalized_response = _normalize_send_response(
+        response=response,
+    )
     _validate_send_response(
         response=normalized_response,
         skade_id=normalized_skade_id,
     )
+
+    incident_efter = await hent_skade_via_id(
+        api_client=api_client,
+        skade_id=normalized_skade_id,
+    )
+    easy_status_efter = _extract_easy_status_text(
+        incident=incident_efter,
+    )
+    easy_reference_efter = _extract_easy_reference(
+        incident=incident_efter,
+    )
+
+    if not (
+        _er_allerede_sendt_til_easy(
+            easy_status=easy_status_efter,
+        )
+        or bool(easy_reference_efter)
+    ):
+        raise RuntimeError(
+            "SendIncidentToEasy returnerede uden fejl, men "
+            "efterkontrollen viser ingen sendt status eller "
+            "EASY-reference. "
+            f"Skade-id: {normalized_skade_id}. "
+            f"EASY-status før: {easy_status_foer!r}. "
+            f"EASY-status efter: {easy_status_efter!r}. "
+            f"EASY-reference efter: {easy_reference_efter!r}."
+        )
+
     return SendSkadeTilEasyResultat(
         skade_id=normalized_skade_id,
-        easy_status_foer=easy_status,
-        easy_reference=easy_reference,
+        easy_status_foer=easy_status_foer,
+        easy_reference=(
+            easy_reference_efter
+            or easy_reference_foer
+        ),
         allerede_sendt=False,
         sendt_nu=True,
-        besked="SendIncidentToEasy blev gennemført.",
+        besked=(
+            "SendIncidentToEasy blev gennemført. "
+            f"EASY-status efter: {easy_status_efter!r}."
+        ),
         afsendelses_response=normalized_response,
     )
+
+
+async def valider_skade_foer_easy(
+    api_client: InsubizApiClient,
+    skade_id: int | str,
+) -> dict[str, Any]:
+    """Kalder Insubiz-valideringen før EASY-afsendelse."""
+    normalized_skade_id = _normalize_skade_id(skade_id)
+
+    try:
+        response = await api_client.get(
+            endpoint=VALIDATE_INCIDENT_FOR_SEND_TO_EASY_ENDPOINT,
+            params={
+                "id": normalized_skade_id,
+            },
+        )
+    except Exception as error:
+        logger.exception(
+            "EASY-valideringen fejlede. Skade-id: %s.",
+            normalized_skade_id,
+        )
+        raise RuntimeError(
+            "Skaden kunne ikke valideres før EASY-afsendelse. "
+            f"Skade-id: {normalized_skade_id}. "
+            f"Underliggende fejl: {type(error).__name__}: {error}"
+        ) from error
+
+    normalized_response = _normalize_easy_validation_response(
+        response=response,
+    )
+    _validate_easy_validation_response(
+        response=normalized_response,
+        skade_id=normalized_skade_id,
+    )
+    return normalized_response
+
+
+async def _haandter_easy_sendefejl(
+    *,
+    api_client: InsubizApiClient,
+    skade_id: int,
+    easy_status_foer: str,
+    easy_reference_foer: str,
+    validation_response: dict[str, Any],
+    send_error: Exception,
+) -> SendSkadeTilEasyResultat:
+    """Efterkontrollerer skaden efter et mislykket EASY-sendekald."""
+    logger.exception(
+        "Afsendelse til EASY fejlede. Efterkontrollerer skaden. "
+        "Skade-id: %s. EASY-status før: %r.",
+        skade_id,
+        easy_status_foer,
+        exc_info=send_error,
+    )
+
+    try:
+        incident_efter = await hent_skade_via_id(
+            api_client=api_client,
+            skade_id=skade_id,
+        )
+    except Exception as kontrol_error:
+        raise RuntimeError(
+            "Skaden kunne ikke sendes til EASY, og efterkontrollen "
+            "kunne ikke hente skaden. "
+            f"Skade-id: {skade_id}. "
+            f"Valideringsresponse: {validation_response!r}. "
+            f"Sendefejl: {type(send_error).__name__}: {send_error}. "
+            "Efterkontrolfejl: "
+            f"{type(kontrol_error).__name__}: {kontrol_error}"
+        ) from send_error
+
+    easy_status_efter = _extract_easy_status_text(
+        incident=incident_efter,
+    )
+    easy_reference_efter = _extract_easy_reference(
+        incident=incident_efter,
+    )
+
+    logger.info(
+        "EASY-efterkontrol udført. Skade-id: %s. "
+        "EASY-status før: %r. EASY-status efter: %r. "
+        "EASY-reference efter fundet: %s.",
+        skade_id,
+        easy_status_foer,
+        easy_status_efter,
+        bool(easy_reference_efter),
+    )
+
+    if (
+        _er_allerede_sendt_til_easy(
+            easy_status=easy_status_efter,
+        )
+        or bool(easy_reference_efter)
+    ):
+        return SendSkadeTilEasyResultat(
+            skade_id=skade_id,
+            easy_status_foer=easy_status_foer,
+            easy_reference=easy_reference_efter,
+            allerede_sendt=False,
+            sendt_nu=True,
+            besked=(
+                "Sendekaldet returnerede en fejl, men efterkontrollen "
+                "viser, at skaden blev sendt til EASY. "
+                f"EASY-status efter: {easy_status_efter!r}."
+            ),
+            afsendelses_response={
+                "statusCode": None,
+                "value": True,
+                "text": (
+                    "Efterkontrollen bekræftede EASY-afsendelsen "
+                    "efter en serverfejl."
+                ),
+                "validationResponse": validation_response,
+                "sendError": (
+                    f"{type(send_error).__name__}: {send_error}"
+                ),
+            },
+        )
+
+    raise RuntimeError(
+        "Skaden kunne ikke sendes til EASY, og efterkontrollen "
+        "viser ingen sendt status eller EASY-reference. "
+        f"Skade-id: {skade_id}. "
+        f"EASY-status før: {easy_status_foer!r}. "
+        f"EASY-status efter: {easy_status_efter!r}. "
+        f"EASY-reference før: {easy_reference_foer!r}. "
+        f"EASY-reference efter: {easy_reference_efter!r}. "
+        f"Valideringsresponse: {validation_response!r}. "
+        "Underliggende fejl: "
+        f"{type(send_error).__name__}: {send_error}"
+    ) from send_error
 
 
 async def klik_paa_skade(page: Page) -> None:
@@ -318,10 +529,10 @@ async def klik_paa_skade(page: Page) -> None:
     await page.wait_for_timeout(UI_WAIT_MS)
 
 
-async def aabn_dokumentdialog(page: Page) -> Locator:
+async def opret_dokument_fra_skabelon(page: Page) -> Locator:
     """Åbner og returnerer dokumentdialogen."""
     button = page.locator(
-        SkadeSelectors.OPRET_DOKUMENT_FRA_SKABELON
+        SkadeSelectors.aabn_dokumentdialog
     ).first
     await button.wait_for(state="visible", timeout=TIMEOUT_MS)
     if not await button.is_enabled():
@@ -1091,11 +1302,23 @@ def _extract_easy_object(
     *,
     incident: dict[str, Any],
 ) -> dict[str, Any]:
+    """Returnerer det indlejrede EASY-objekt, hvis det findes."""
+    if not isinstance(incident, dict):
+        raise TypeError(
+            "incident skal være en dictionary."
+        )
+
     easy = incident.get("easy")
+
     if easy is None:
         return {}
+
     if not isinstance(easy, dict):
-        raise RuntimeError("Feltet easy er ikke en dictionary.")
+        raise RuntimeError(
+            "Feltet easy er ikke en dictionary. "
+            f"Modtog: {type(easy).__name__}."
+        )
+
     return easy
 
 
@@ -1103,31 +1326,205 @@ def _extract_easy_status_text(
     *,
     incident: dict[str, Any],
 ) -> str:
-    status = _extract_easy_object(incident=incident).get("easyStatus")
+    """Henter EASY-status fra topniveau eller det indlejrede easy-objekt."""
+    if not isinstance(incident, dict):
+        raise TypeError(
+            "incident skal være en dictionary."
+        )
+
+    easy = _extract_easy_object(
+        incident=incident,
+    )
+
+    status = (
+        incident.get("easyStatus")
+        or incident.get("easy.status")
+        or easy.get("easyStatus")
+        or easy.get("status")
+    )
+
     if status is None:
         return ""
+
     if isinstance(status, dict):
-        return str(status.get("text") or "").strip()
+        return str(
+            status.get("text")
+            or status.get("name")
+            or status.get("value")
+            or ""
+        ).strip()
+
     if isinstance(status, str):
         return status.strip()
-    raise RuntimeError("Feltet easy.easyStatus er ugyldigt.")
+
+    raise RuntimeError(
+        "EASY-status havde et ugyldigt format. "
+        f"Modtog: {type(status).__name__}. "
+        f"Værdi: {status!r}."
+    )
 
 
 def _extract_easy_reference(
     *,
     incident: dict[str, Any],
 ) -> str:
-    easy = _extract_easy_object(incident=incident)
-    easy_ref = str(easy.get("easyRef") or "").strip()
-    if easy_ref:
-        return easy_ref
-    claim_id = str(easy.get("easyClaimId") or "").strip()
-    return claim_id if claim_id not in {"", "0"} else ""
+    """Henter EASY-reference fra topniveau eller det indlejrede easy-objekt."""
+    if not isinstance(incident, dict):
+        raise TypeError(
+            "incident skal være en dictionary."
+        )
+
+    easy = _extract_easy_object(
+        incident=incident,
+    )
+
+    easy_reference = str(
+        incident.get("easyRef")
+        or incident.get("easy.ref")
+        or easy.get("easyRef")
+        or easy.get("ref")
+        or ""
+    ).strip()
+
+    if easy_reference:
+        return easy_reference
+
+    claim_id = str(
+        incident.get("easyClaimId")
+        or incident.get("easy.claimId")
+        or easy.get("easyClaimId")
+        or easy.get("claimId")
+        or ""
+    ).strip()
+
+    if claim_id in {
+        "",
+        "0",
+        "None",
+    }:
+        return ""
+
+    return claim_id
 
 
-def _er_allerede_sendt_til_easy(*, easy_status: str) -> bool:
-    normalized = " ".join(easy_status.split()).casefold()
-    return normalized in EASY_STATUS_ALLEREDE_SENDT
+def _normalize_easy_status(value: str) -> str:
+    """Normaliserer EASY-status til robust sammenligning."""
+    return " ".join(
+        str(value).strip().split()
+    ).casefold()
+
+
+def _er_allerede_sendt_til_easy(
+    *,
+    easy_status: str,
+) -> bool:
+    """Kontrollerer om EASY-status forhindrer genafsendelse."""
+    return (
+        _normalize_easy_status(easy_status)
+        in EASY_STATUS_ALLEREDE_SENDT
+    )
+
+
+def _normalize_easy_validation_response(
+    *,
+    response: Any,
+) -> dict[str, Any]:
+    """Normaliserer de kendte svarformer fra EASY-valideringen."""
+    if isinstance(response, dict):
+        return response
+
+    if isinstance(response, bool):
+        return {
+            "isValid": response,
+            "value": response,
+            "text": "OK" if response else "False",
+        }
+
+    if isinstance(response, list):
+        return {
+            "isValid": len(response) == 0,
+            "errors": response,
+            "value": response,
+            "text": "",
+        }
+
+    if isinstance(response, str):
+        return {
+            "isValid": None,
+            "value": response,
+            "text": response.strip(),
+        }
+
+    if response is None:
+        return {
+            "isValid": None,
+            "value": None,
+            "text": "",
+        }
+
+    return {
+        "isValid": None,
+        "value": response,
+        "text": str(response),
+    }
+
+
+def _validate_easy_validation_response(
+    *,
+    response: dict[str, Any],
+    skade_id: int,
+) -> None:
+    """Afviser kun valideringssvar, der eksplicit melder fejl."""
+    explicit_validity = response.get("isValid")
+
+    if explicit_validity is None:
+        explicit_validity = response.get("valid")
+
+    if explicit_validity is None:
+        explicit_validity = response.get("success")
+
+    value = response.get("value")
+    errors = (
+        response.get("errors")
+        or response.get("validationErrors")
+        or response.get("messages")
+        or []
+    )
+    text = str(
+        response.get("text")
+        or response.get("message")
+        or response.get("error")
+        or ""
+    ).strip()
+    normalized_text = text.casefold()
+
+    if explicit_validity is False or value is False:
+        raise RuntimeError(
+            "EASY-valideringen afviste skaden. "
+            f"Skade-id: {skade_id}. Response: {response!r}."
+        )
+
+    if errors:
+        raise RuntimeError(
+            "EASY-valideringen returnerede valideringsfejl. "
+            f"Skade-id: {skade_id}. Fejl: {errors!r}."
+        )
+
+    if any(
+        word in normalized_text
+        for word in (
+            "error",
+            "fejl",
+            "failed",
+            "mislykkedes",
+            "invalid",
+            "ugyldig",
+        )
+    ):
+        raise RuntimeError(
+            "EASY-valideringen returnerede en fejltekst. "
+            f"Skade-id: {skade_id}. Response: {response!r}."
+        )
 
 
 def _normalize_send_response(*, response: Any) -> dict[str, Any]:
@@ -1280,7 +1677,7 @@ __all__ = [
     "SKADER_LISTE",
     "SendSkadeTilEasyResultat",
     "SkadeStatus",
-    "aabn_dokumentdialog",
+    "opret_dokument_fra_skabelon",
     "download_easy_rapport_og_gem_i_mappe",
     "gem_dokument_fra_skabelon",
     "hent_dokumentnavne",
@@ -1291,5 +1688,6 @@ __all__ = [
     "opdater_skade_status_fra_seneste_data",
     "send_digital_post",
     "send_skade_til_easy",
+    "valider_skade_foer_easy",
     "vaelg_dokumentskabelon",
 ]
