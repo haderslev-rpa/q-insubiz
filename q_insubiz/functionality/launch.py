@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -19,26 +20,39 @@ logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------
-# Konfiguration
+# KONFIGURATION
 # --------------------------------------------------
+
 LOGIN_URL = "https://start.insubiz.dk/login"
 CREDENTIAL_NAME = "Q_INSUBIZ"
 
-NAVIGATION_TIMEOUT_MS = 30_000
-ELEMENT_TIMEOUT_MS = 15_000
-LOGIN_TIMEOUT_MS = 30_000
+# Navigationen fik tidligere kun 30 sekunder.
+# Den får nu op til 90 sekunder pr. forsøg.
+NAVIGATION_TIMEOUT_MS = 90_000
+
+# Antal kontrollerede navigationsforsøg.
+NAVIGATION_MAX_FORSOEG = 3
+
+# Pause mellem navigationsforsøg.
+# Pausen multipliceres med forsøgsnummeret.
+NAVIGATION_RETRY_PAUSE_MS = 3_000
+
+# Timeout til formularfelter.
+ELEMENT_TIMEOUT_MS = 30_000
+
+# Timeout efter klik på login.
+LOGIN_TIMEOUT_MS = 60_000
+
 FIELD_PAUSE_MS = 250
 LOGIN_PAUSE_MS = 1_000
 
 
 # --------------------------------------------------
-# Credentials fra Data (JSON)
+# CREDENTIALS FRA DATA (JSON)
 # --------------------------------------------------
+
 def _get_credentials() -> tuple[str, str]:
-    """
-    Henter Insubiz-login fra Data (JSON) på
-    Automation Server-credentialen Q_INSUBIZ.
-    """
+    """Henter Insubiz-login fra credentialen Q_INSUBIZ."""
     try:
         AutomationServer.from_environment()
     except Exception as error:
@@ -68,10 +82,13 @@ def _get_credentials() -> tuple[str, str]:
         )
 
     email = str(
-        data.get("email") or ""
+        data.get("email")
+        or ""
     ).strip()
+
     password = str(
-        data.get("password") or ""
+        data.get("password")
+        or ""
     )
 
     if not email:
@@ -98,17 +115,176 @@ def _get_credentials() -> tuple[str, str]:
 
 
 # --------------------------------------------------
-# Login
+# NAVIGATION
 # --------------------------------------------------
+
+async def _aabn_login_med_genforsoeg(
+    *,
+    page: Page,
+) -> None:
+    """Åbner Insubiz-login med kontrollerede genforsøg."""
+    if page.is_closed():
+        raise RuntimeError(
+            "Insubiz-login kunne ikke åbnes, fordi "
+            "Playwright-siden er lukket."
+        )
+
+    sidste_fejl: Exception | None = None
+
+    for forsoeg in range(
+        1,
+        NAVIGATION_MAX_FORSOEG + 1,
+    ):
+        if page.is_closed():
+            raise RuntimeError(
+                "Playwright-siden blev lukket under "
+                "navigationen til Insubiz."
+            )
+
+        logger.info(
+            "Åbner Insubiz-login. "
+            "Forsøg %s af %s. "
+            "Timeout: %s sekunder.",
+            forsoeg,
+            NAVIGATION_MAX_FORSOEG,
+            NAVIGATION_TIMEOUT_MS // 1_000,
+        )
+
+        try:
+            response = await page.goto(
+                LOGIN_URL,
+                wait_until="domcontentloaded",
+                timeout=NAVIGATION_TIMEOUT_MS,
+            )
+
+            if page.is_closed():
+                raise RuntimeError(
+                    "Playwright-siden blev lukket efter "
+                    "navigationen til Insubiz."
+                )
+
+            http_status = (
+                response.status
+                if response is not None
+                else None
+            )
+
+            if (
+                http_status is not None
+                and http_status >= 400
+            ):
+                raise RuntimeError(
+                    "Insubiz-login returnerede en "
+                    "HTTP-fejl. "
+                    f"HTTP-status: {http_status}. "
+                    f"URL: {page.url}."
+                )
+
+            logger.info(
+                "Insubiz-login blev indlæst. "
+                "Forsøg: %s. "
+                "HTTP-status: %r. "
+                "URL: %s.",
+                forsoeg,
+                http_status,
+                page.url,
+            )
+
+            return
+
+        except PlaywrightTimeoutError as error:
+            sidste_fejl = error
+
+            logger.warning(
+                "Timeout ved åbning af Insubiz-login. "
+                "Forsøg %s af %s. "
+                "Timeout: %s sekunder. "
+                "Aktuel URL: %s.",
+                forsoeg,
+                NAVIGATION_MAX_FORSOEG,
+                NAVIGATION_TIMEOUT_MS // 1_000,
+                page.url,
+            )
+
+            await _stop_eventuel_navigation(
+                page=page,
+            )
+
+        except RuntimeError as error:
+            sidste_fejl = error
+
+            logger.warning(
+                "Insubiz-login kunne ikke åbnes. "
+                "Forsøg %s af %s. "
+                "Fejl: %s",
+                forsoeg,
+                NAVIGATION_MAX_FORSOEG,
+                error,
+            )
+
+        if forsoeg >= NAVIGATION_MAX_FORSOEG:
+            break
+
+        pause_ms = (
+            NAVIGATION_RETRY_PAUSE_MS
+            * forsoeg
+        )
+
+        logger.info(
+            "Venter %s sekunder før næste "
+            "navigationsforsøg.",
+            pause_ms / 1_000,
+        )
+
+        await page.wait_for_timeout(
+            pause_ms
+        )
+
+    raise RuntimeError(
+        "Insubiz-login kunne ikke indlæses efter "
+        f"{NAVIGATION_MAX_FORSOEG} forsøg. "
+        f"Timeout pr. forsøg: "
+        f"{NAVIGATION_TIMEOUT_MS // 1_000} sekunder. "
+        f"Sidste URL: {page.url}. "
+        f"Sidste fejl: "
+        f"{type(sidste_fejl).__name__}: "
+        f"{sidste_fejl}"
+    ) from sidste_fejl
+
+
+async def _stop_eventuel_navigation(
+    *,
+    page: Page,
+) -> None:
+    """Forsøger at stoppe en hængende browsernavigation."""
+    if page.is_closed():
+        return
+
+    try:
+        await page.evaluate(
+            "window.stop()"
+        )
+    except Exception:
+        logger.debug(
+            "En hængende navigation kunne ikke "
+            "stoppes med window.stop().",
+            exc_info=True,
+        )
+
+
+# --------------------------------------------------
+# LOGIN
+# --------------------------------------------------
+
 async def launch_insubiz(
     page: Page,
 ) -> None:
-    """
-    Åbner Insubiz og logger ind.
+    """Åbner Insubiz og logger ind."""
+    if page is None:
+        raise ValueError(
+            "page må ikke være None."
+        )
 
-    E-mail og adgangskode hentes fra Data (JSON)
-    på Automation Server-credentialen Q_INSUBIZ.
-    """
     if page.is_closed():
         raise RuntimeError(
             "Insubiz kunne ikke åbnes, fordi "
@@ -118,10 +294,8 @@ async def launch_insubiz(
     email, password = _get_credentials()
 
     try:
-        await page.goto(
-            LOGIN_URL,
-            wait_until="domcontentloaded",
-            timeout=NAVIGATION_TIMEOUT_MS,
+        await _aabn_login_med_genforsoeg(
+            page=page,
         )
 
         email_input = page.locator(
@@ -151,7 +325,10 @@ async def launch_insubiz(
             timeout=ELEMENT_TIMEOUT_MS,
         )
 
-        await email_input.fill(email)
+        await email_input.fill(
+            email
+        )
+
         await page.wait_for_timeout(
             FIELD_PAUSE_MS
         )
@@ -162,17 +339,25 @@ async def launch_insubiz(
 
         if actual_email != email:
             raise RuntimeError(
-                "E-mailadressen blev ikke indsat korrekt. "
+                "E-mailadressen blev ikke indsat "
+                "korrekt. "
                 f"Forventet længde: {len(email)}. "
-                f"Indsat længde: {len(actual_email)}."
+                f"Indsat længde: "
+                f"{len(actual_email)}."
             )
 
-        await email_input.press("Tab")
+        await email_input.press(
+            "Tab"
+        )
+
         await page.wait_for_timeout(
             FIELD_PAUSE_MS
         )
 
-        await password_input.fill(password)
+        await password_input.fill(
+            password
+        )
+
         await page.wait_for_timeout(
             FIELD_PAUSE_MS
         )
@@ -183,9 +368,12 @@ async def launch_insubiz(
 
         if actual_password != password:
             raise RuntimeError(
-                "Adgangskoden blev ikke indsat korrekt. "
-                f"Forventet længde: {len(password)}. "
-                f"Indsat længde: {len(actual_password)}."
+                "Adgangskoden blev ikke indsat "
+                "korrekt. "
+                f"Forventet længde: "
+                f"{len(password)}. "
+                f"Indsat længde: "
+                f"{len(actual_password)}."
             )
 
         login_button = login_form.locator(
@@ -199,13 +387,16 @@ async def launch_insubiz(
             )
 
             if await login_button.is_disabled():
-                error_message = await _get_error_message(
-                    page=page,
+                error_message = (
+                    await _get_error_message(
+                        page=page,
+                    )
                 )
 
                 message = (
-                    "Login-knappen er deaktiveret efter "
-                    "udfyldning af loginformularen."
+                    "Login-knappen er deaktiveret "
+                    "efter udfyldning af "
+                    "loginformularen."
                 )
 
                 if error_message:
@@ -214,36 +405,44 @@ async def launch_insubiz(
                         f"{error_message}"
                     )
 
-                raise RuntimeError(message)
+                raise RuntimeError(
+                    message
+                )
 
             await login_button.click()
+
         else:
             logger.warning(
                 "Login-knappen blev ikke fundet. "
                 "Forsøger login med Enter."
             )
-            await password_input.press("Enter")
 
-        await email_input.wait_for(
-            state="hidden",
-            timeout=LOGIN_TIMEOUT_MS,
-        )
+            await password_input.press(
+                "Enter"
+            )
 
-        await page.wait_for_timeout(
-            LOGIN_PAUSE_MS
+        await _vent_paa_gennemfoert_login(
+            page=page,
+            email_input=email_input,
         )
 
         logger.info(
-            "Login i Insubiz blev gennemført. URL: %s.",
+            "Login i Insubiz blev gennemført. "
+            "URL: %s.",
             page.url,
         )
 
     except PlaywrightTimeoutError as error:
-        error_message = await _get_error_message(
-            page=page,
+        error_message = (
+            await _get_error_message(
+                page=page,
+            )
         )
 
-        message = "Login i Insubiz fik timeout."
+        message = (
+            "Login i Insubiz fik timeout efter "
+            "navigationen til login-siden."
+        )
 
         if error_message:
             message += (
@@ -251,20 +450,80 @@ async def launch_insubiz(
                 f"{error_message}"
             )
 
-        message += f" URL: {page.url}"
+        message += (
+            f" URL: {page.url}. "
+            f"Element-timeout: "
+            f"{ELEMENT_TIMEOUT_MS // 1_000} sekunder. "
+            f"Login-timeout: "
+            f"{LOGIN_TIMEOUT_MS // 1_000} sekunder."
+        )
 
-        logger.exception(message)
-        raise RuntimeError(message) from error
+        logger.exception(
+            message
+        )
+
+        raise RuntimeError(
+            message
+        ) from error
+
+
+async def _vent_paa_gennemfoert_login(
+    *,
+    page: Page,
+    email_input: Any,
+) -> None:
+    """Venter på at loginformularen forsvinder."""
+    try:
+        await email_input.wait_for(
+            state="hidden",
+            timeout=LOGIN_TIMEOUT_MS,
+        )
+
+    except PlaywrightTimeoutError as error:
+        error_message = (
+            await _get_error_message(
+                page=page,
+            )
+        )
+
+        message = (
+            "Loginformularen forsvandt ikke efter "
+            "loginforsøget."
+        )
+
+        if error_message:
+            message += (
+                " Fejlbesked fra Insubiz: "
+                f"{error_message}"
+            )
+
+        message += (
+            f" URL: {page.url}. "
+            f"Timeout: "
+            f"{LOGIN_TIMEOUT_MS // 1_000} sekunder."
+        )
+
+        raise RuntimeError(
+            message
+        ) from error
+
+    await page.wait_for_timeout(
+        LOGIN_PAUSE_MS
+    )
 
 
 # --------------------------------------------------
-# Fejlbesked
+# FEJLBESKED
 # --------------------------------------------------
+
 async def _get_error_message(
     *,
     page: Page,
 ) -> str:
     """Finder en synlig fejlbesked på login-siden."""
+    if page is None:
+        return ""
+
     if page.is_closed():
         return ""
 
@@ -284,11 +543,14 @@ async def _get_error_message(
         )
 
         return error_message.strip()
+
     except Exception:
         logger.debug(
-            "En eventuel loginfejl kunne ikke aflæses.",
+            "En eventuel loginfejl kunne ikke "
+            "aflæses.",
             exc_info=True,
         )
+
         return ""
 
 
