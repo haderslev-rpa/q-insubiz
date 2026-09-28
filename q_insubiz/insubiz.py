@@ -6,10 +6,9 @@ from typing import Any
 
 from playwright.async_api import Locator, Page
 
-from q_insubiz.functionality.launch import launch_insubiz
 from q_insubiz.functionality import skader as skade_funktioner
+from q_insubiz.functionality.launch import launch_insubiz
 from q_insubiz.selectors import InsubizSelectors
-
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +66,7 @@ class Insubiz:
         if self._page.is_closed():
             return ""
 
-        error_locator = self._page.locator(
-            InsubizSelectors.LOGIN_ERROR
-        ).first
+        error_locator = self._page.locator(InsubizSelectors.LOGIN_ERROR).first
 
         try:
             if await error_locator.count() == 0:
@@ -78,9 +75,7 @@ class Insubiz:
             if not await error_locator.is_visible():
                 return ""
 
-            return (
-                await error_locator.inner_text()
-            ).strip()
+            return (await error_locator.inner_text()).strip()
         except Exception:
             logger.debug(
                 "En eventuel fejlbesked kunne ikke aflæses.",
@@ -100,22 +95,16 @@ class Insubiz:
         )
 
         if not isinstance(full_page, bool):
-            raise TypeError(
-                "full_page skal være True eller False."
-            )
+            raise TypeError("full_page skal være True eller False.")
 
-        normalized_filename = self._normalize_filename(
-            filename
-        )
+        normalized_filename = self._normalize_filename(filename)
 
         SCREENSHOT_DIRECTORY.mkdir(
             parents=True,
             exist_ok=True,
         )
 
-        screenshot_path = (
-            SCREENSHOT_DIRECTORY / normalized_filename
-        )
+        screenshot_path = SCREENSHOT_DIRECTORY / normalized_filename
 
         try:
             await self._page.screenshot(
@@ -128,8 +117,7 @@ class Insubiz:
                 screenshot_path,
             )
             raise RuntimeError(
-                "Screenshot kunne ikke gemmes. "
-                f"Fil: {screenshot_path}."
+                f"Screenshot kunne ikke gemmes. Fil: {screenshot_path}."
             ) from error
 
         logger.info(
@@ -212,8 +200,7 @@ class Insubiz:
         """Kontrollerer, at siden er åben før en handling."""
         if self._page.is_closed():
             raise RuntimeError(
-                f"{operation} kunne ikke udføres, "
-                "fordi Playwright-siden er lukket."
+                f"{operation} kunne ikke udføres, fordi Playwright-siden er lukket."
             )
 
     @staticmethod
@@ -227,38 +214,30 @@ class Insubiz:
         )
 
         missing_members = [
-            member
-            for member in required_members
-            if not hasattr(page, member)
+            member for member in required_members if not hasattr(page, member)
         ]
 
         if missing_members:
             raise TypeError(
-                "page mangler nødvendige Playwright-medlemmer: "
-                f"{missing_members!r}."
+                f"page mangler nødvendige Playwright-medlemmer: {missing_members!r}."
             )
 
     @staticmethod
     def _normalize_filename(filename: str) -> str:
         """Validerer og normaliserer et screenshot-filnavn."""
         if not isinstance(filename, str):
-            raise TypeError(
-                "filename skal være tekst."
-            )
+            raise TypeError("filename skal være tekst.")
 
         normalized_filename = filename.strip()
 
         if not normalized_filename:
-            raise ValueError(
-                "filename må ikke være tomt."
-            )
+            raise ValueError("filename må ikke være tomt.")
 
         path = Path(normalized_filename)
 
         if path.name != normalized_filename:
             raise ValueError(
-                "filename må kun være et filnavn og må "
-                "ikke indeholde en mappesti."
+                "filename må kun være et filnavn og må ikke indeholde en mappesti."
             )
 
         if path.suffix.casefold() not in {
@@ -266,14 +245,12 @@ class Insubiz:
             ".jpg",
             ".jpeg",
         }:
-            normalized_filename = (
-                f"{normalized_filename}.png"
-            )
+            normalized_filename = f"{normalized_filename}.png"
 
         return normalized_filename
 
 
 __all__ = [
-    "Insubiz",
     "SCREENSHOT_DIRECTORY",
+    "Insubiz",
 ]

@@ -1,7 +1,6 @@
 import logging
 from typing import Any
 
-
 from q_insubiz.api.client import (
     InsubizApiClient,
 )
@@ -11,20 +10,15 @@ from q_insubiz.utils import (
     parse_excel_response,
 )
 
-
 logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------
 # Endpoints
 # --------------------------------------------------
-GET_VEHICLE_BY_ID_ENDPOINT = (
-    "/Vehicle/GetVehicleById"
-)
+GET_VEHICLE_BY_ID_ENDPOINT = "/Vehicle/GetVehicleById"
 
-KOERETOEJER_LISTE_ENDPOINT = (
-    "/ImportExport/ExportVehicles"
-)
+KOERETOEJER_LISTE_ENDPOINT = "/ImportExport/ExportVehicles"
 
 
 # --------------------------------------------------
@@ -54,8 +48,7 @@ async def hent_koeretoej_via_id(
     )
 
     logger.info(
-        "Henter køretøj fra Insubiz. "
-        "Køretøjs-id: %s.",
+        "Henter køretøj fra Insubiz. Køretøjs-id: %s.",
         normalized_id,
     )
 
@@ -68,14 +61,12 @@ async def hent_koeretoej_via_id(
         )
     except Exception as error:
         logger.exception(
-            "Køretøjet kunne ikke hentes fra Insubiz. "
-            "Køretøjs-id: %s.",
+            "Køretøjet kunne ikke hentes fra Insubiz. Køretøjs-id: %s.",
             normalized_id,
         )
 
         raise RuntimeError(
-            "Køretøjet kunne ikke hentes fra Insubiz. "
-            f"Køretøjs-id: {normalized_id}."
+            f"Køretøjet kunne ikke hentes fra Insubiz. Køretøjs-id: {normalized_id}."
         ) from error
 
     koeretoej = _validate_koeretoej_response(
@@ -84,8 +75,7 @@ async def hent_koeretoej_via_id(
     )
 
     logger.info(
-        "Køretøjet blev hentet fra Insubiz. "
-        "Køretøjs-id: %s. Registrering: %s.",
+        "Køretøjet blev hentet fra Insubiz. Køretøjs-id: %s. Registrering: %s.",
         normalized_id,
         koeretoej.get("registration", ""),
     )
@@ -141,40 +131,27 @@ async def KOERETOEJER_LISTE(
 
     params: dict[str, int | str] = {
         "customerId": customer_id,
-        "showTreeData": str(
-            show_tree_data
-        ).lower(),
-        "activeOnly": str(
-            active_only
-        ).lower(),
+        "showTreeData": str(show_tree_data).lower(),
+        "activeOnly": str(active_only).lower(),
     }
 
     logger.info(
-        "Henter køretøjsliste fra Insubiz. "
-        "Kunde-id: %s. Kun aktive: %s.",
+        "Henter køretøjsliste fra Insubiz. Kunde-id: %s. Kun aktive: %s.",
         customer_id,
         active_only,
     )
 
     try:
-        content, content_type = (
-            await api_client.download(
-                endpoint=KOERETOEJER_LISTE_ENDPOINT,
-                method="POST",
-                params=params,
-                json_body=selected_columns,
-            )
+        content, content_type = await api_client.download(
+            endpoint=KOERETOEJER_LISTE_ENDPOINT,
+            method="POST",
+            params=params,
+            json_body=selected_columns,
         )
     except Exception as error:
-        logger.exception(
-            "Køretøjslisten kunne ikke hentes "
-            "fra Insubiz."
-        )
+        logger.exception("Køretøjslisten kunne ikke hentes fra Insubiz.")
 
-        raise RuntimeError(
-            "Køretøjslisten kunne ikke hentes "
-            "fra Insubiz."
-        ) from error
+        raise RuntimeError("Køretøjslisten kunne ikke hentes fra Insubiz.") from error
 
     rows = parse_excel_response(
         content=content,
@@ -183,8 +160,7 @@ async def KOERETOEJER_LISTE(
     )
 
     logger.info(
-        "Køretøjslisten blev hentet fra Insubiz. "
-        "Antal rækker: %s.",
+        "Køretøjslisten blev hentet fra Insubiz. Antal rækker: %s.",
         len(rows),
     )
 
@@ -204,8 +180,7 @@ def _validate_koeretoej_response(
     """Validerer svaret fra GetVehicleById."""
     if response is None:
         raise RuntimeError(
-            "Insubiz returnerede intet køretøj. "
-            f"Køretøjs-id: {koeretoej_id}."
+            f"Insubiz returnerede intet køretøj. Køretøjs-id: {koeretoej_id}."
         )
 
     if not isinstance(response, dict):
@@ -218,22 +193,18 @@ def _validate_koeretoej_response(
 
     if not response:
         raise RuntimeError(
-            "Insubiz returnerede et tomt køretøj. "
-            f"Køretøjs-id: {koeretoej_id}."
+            f"Insubiz returnerede et tomt køretøj. Køretøjs-id: {koeretoej_id}."
         )
 
     response_id = response.get("id")
 
     if response_id is None:
         raise RuntimeError(
-            "Svaret fra Insubiz mangler feltet 'id'. "
-            f"Køretøjs-id: {koeretoej_id}."
+            f"Svaret fra Insubiz mangler feltet 'id'. Køretøjs-id: {koeretoej_id}."
         )
 
     try:
-        normalized_response_id = int(
-            response_id
-        )
+        normalized_response_id = int(response_id)
     except (TypeError, ValueError) as error:
         raise RuntimeError(
             "Svaret fra Insubiz indeholder et "
@@ -262,25 +233,14 @@ def _validate_liste_parameters(
     active_only: bool,
 ) -> None:
     """Validerer parametrene til køretøjseksporten."""
-    if (
-        not isinstance(customer_id, int)
-        or isinstance(customer_id, bool)
-    ):
-        raise TypeError(
-            "customer_id skal være et heltal."
-        )
+    if not isinstance(customer_id, int) or isinstance(customer_id, bool):
+        raise TypeError("customer_id skal være et heltal.")
 
     if customer_id < 0:
-        raise ValueError(
-            "customer_id må ikke være negativ."
-        )
+        raise ValueError("customer_id må ikke være negativ.")
 
     if not isinstance(show_tree_data, bool):
-        raise TypeError(
-            "show_tree_data skal være True eller False."
-        )
+        raise TypeError("show_tree_data skal være True eller False.")
 
     if not isinstance(active_only, bool):
-        raise TypeError(
-            "active_only skal være True eller False."
-        )
+        raise TypeError("active_only skal være True eller False.")

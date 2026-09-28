@@ -12,7 +12,6 @@ from q_insubiz.functionality.skader import (
     SKADER_LISTE,
 )
 
-
 # --------------------------------------------------
 # Testindstillinger
 # --------------------------------------------------

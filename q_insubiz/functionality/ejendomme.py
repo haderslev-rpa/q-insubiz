@@ -9,16 +9,13 @@ from q_insubiz.utils import (
     validate_bool,
 )
 
-
 logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------
 # Endpoints
 # --------------------------------------------------
-EJENDOMME_LISTE_ENDPOINT = (
-    "/ImportExport/ExportLocations"
-)
+EJENDOMME_LISTE_ENDPOINT = "/ImportExport/ExportLocations"
 
 
 # --------------------------------------------------
@@ -72,8 +69,7 @@ async def EJENDOMME_LISTE(
     }
 
     logger.info(
-        "Henter ejendomsliste fra Insubiz. "
-        "Kunde-id: %s. Kun aktive: %s.",
+        "Henter ejendomsliste fra Insubiz. Kunde-id: %s. Kun aktive: %s.",
         customer_id,
         active_only,
     )
@@ -86,12 +82,8 @@ async def EJENDOMME_LISTE(
             json_body=selected_columns,
         )
     except Exception as error:
-        logger.exception(
-            "Ejendomslisten kunne ikke hentes fra Insubiz."
-        )
-        raise RuntimeError(
-            "Ejendomslisten kunne ikke hentes fra Insubiz."
-        ) from error
+        logger.exception("Ejendomslisten kunne ikke hentes fra Insubiz.")
+        raise RuntimeError("Ejendomslisten kunne ikke hentes fra Insubiz.") from error
 
     rows = parse_excel_response(
         content=content,
@@ -100,8 +92,7 @@ async def EJENDOMME_LISTE(
     )
 
     logger.info(
-        "Ejendomslisten blev hentet fra Insubiz. "
-        "Antal rækker: %s.",
+        "Ejendomslisten blev hentet fra Insubiz. Antal rækker: %s.",
         len(rows),
     )
 

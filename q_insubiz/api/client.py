@@ -6,10 +6,9 @@ from typing import Any
 
 from playwright.async_api import APIResponse
 
-from q_insubiz.api.auth_manager import (
-    InsubizAuthManager,
+from q_insubiz.api.auth_manager_protocol import (
+    InsubizAuthManagerProtocol,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +44,7 @@ class InsubizApiClient:
         }
     )
 
-    JSON_ACCEPT_HEADER = (
-        "application/json, text/plain, */*"
-    )
+    JSON_ACCEPT_HEADER = "application/json, text/plain, */*"
 
     DOWNLOAD_ACCEPT_HEADER = (
         "application/vnd.openxmlformats-"
@@ -59,15 +56,32 @@ class InsubizApiClient:
 
     def __init__(
         self,
-        auth_manager: InsubizAuthManager,
+        auth_manager: InsubizAuthManagerProtocol,
     ) -> None:
-        if not isinstance(
-            auth_manager,
-            InsubizAuthManager,
-        ):
+        if auth_manager is None:
+            raise TypeError("auth_manager må ikke være None.")
+
+        required_methods = (
+            "get_request_context",
+            "refresh",
+            "close",
+        )
+        missing_methods = [
+            method_name
+            for method_name in required_methods
+            if not callable(
+                getattr(
+                    auth_manager,
+                    method_name,
+                    None,
+                )
+            )
+        ]
+
+        if missing_methods:
             raise TypeError(
-                "auth_manager skal være en "
-                "InsubizAuthManager."
+                "auth_manager mangler nødvendige callable metoder. "
+                f"Manglende metoder: {missing_methods!r}."
             )
 
         self._auth_manager = auth_manager
@@ -81,16 +95,12 @@ class InsubizApiClient:
     ) -> str:
         """Opretter den komplette URL til API-kaldet."""
         if not isinstance(endpoint, str):
-            raise TypeError(
-                "endpoint skal være en tekstværdi."
-            )
+            raise TypeError("endpoint skal være en tekstværdi.")
 
         normalized_endpoint = endpoint.strip()
 
         if not normalized_endpoint:
-            raise ValueError(
-                "endpoint må ikke være tom."
-            )
+            raise ValueError("endpoint må ikke være tom.")
 
         if normalized_endpoint.startswith(
             (
@@ -100,10 +110,7 @@ class InsubizApiClient:
         ):
             return normalized_endpoint
 
-        return (
-            f"{self.BASE_URL}/"
-            f"{normalized_endpoint.lstrip('/')}"
-        )
+        return f"{self.BASE_URL}/{normalized_endpoint.lstrip('/')}"
 
     def _normalize_method(
         self,
@@ -111,9 +118,7 @@ class InsubizApiClient:
     ) -> str:
         """Validerer og normaliserer HTTP-metoden."""
         if not isinstance(method, str):
-            raise TypeError(
-                "method skal være en tekstværdi."
-            )
+            raise TypeError("method skal være en tekstværdi.")
 
         normalized_method = method.strip().upper()
 
@@ -141,9 +146,7 @@ class InsubizApiClient:
         """Opretter options til Playwright fetch()."""
         headers = {
             "Accept": (
-                self.DOWNLOAD_ACCEPT_HEADER
-                if download
-                else self.JSON_ACCEPT_HEADER
+                self.DOWNLOAD_ACCEPT_HEADER if download else self.JSON_ACCEPT_HEADER
             ),
             "Referer": f"{self.BASE_URL}/",
         }
@@ -153,16 +156,12 @@ class InsubizApiClient:
             "params": params,
             "headers": headers,
             "timeout": (
-                self.DOWNLOAD_TIMEOUT_MS
-                if download
-                else self.REQUEST_TIMEOUT_MS
+                self.DOWNLOAD_TIMEOUT_MS if download else self.REQUEST_TIMEOUT_MS
             ),
         }
 
         if json_body is not None:
-            headers["Content-Type"] = (
-                "application/json; charset=utf-8"
-            )
+            headers["Content-Type"] = "application/json; charset=utf-8"
             request_options["data"] = json.dumps(
                 json_body,
                 ensure_ascii=False,
@@ -183,15 +182,10 @@ class InsubizApiClient:
         download: bool = False,
     ) -> APIResponse:
         """Sender ét request gennem den aktive session."""
-        normalized_method = self._normalize_method(
-            method
-        )
+        normalized_method = self._normalize_method(method)
         url = self._create_url(endpoint)
 
-        request_context = (
-            await self._auth_manager
-            .get_request_context()
-        )
+        request_context = await self._auth_manager.get_request_context()
 
         request_options = self._create_request_options(
             method=normalized_method,
@@ -213,8 +207,7 @@ class InsubizApiClient:
             )
         except Exception as error:
             logger.exception(
-                "Insubiz-requestet kunne ikke udføres. "
-                "Metode: %s. Endpoint: %s.",
+                "Insubiz-requestet kunne ikke udføres. Metode: %s. Endpoint: %s.",
                 normalized_method,
                 endpoint,
             )
@@ -283,9 +276,7 @@ class InsubizApiClient:
         json_body: Any = None,
     ) -> Any:
         """Udfører et API-kald og returnerer JSON."""
-        normalized_method = self._normalize_method(
-            method
-        )
+        normalized_method = self._normalize_method(method)
 
         response = await self._send_with_refresh(
             method=normalized_method,
@@ -427,14 +418,10 @@ class InsubizApiClient:
         Returnerer filens binære indhold og response-headerens
         Content-Type.
         """
-        normalized_method = self._normalize_method(
-            method
-        )
+        normalized_method = self._normalize_method(method)
 
         if normalized_method not in self.DOWNLOAD_METHODS:
-            raise ValueError(
-                "Download-metoden skal være GET eller POST."
-            )
+            raise ValueError("Download-metoden skal være GET eller POST.")
 
         response = await self._send_with_refresh(
             method=normalized_method,
@@ -458,9 +445,7 @@ class InsubizApiClient:
         content = await response.body()
 
         if not content:
-            raise RuntimeError(
-                "Insubiz-eksporten returnerede en tom fil."
-            )
+            raise RuntimeError("Insubiz-eksporten returnerede en tom fil.")
 
         content_type = (
             response.headers.get(

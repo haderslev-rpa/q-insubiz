@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from io import BytesIO
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from openpyxl import load_workbook
 
@@ -19,16 +20,13 @@ def normalize_required_text(
 
     if not isinstance(value, str):
         raise TypeError(
-            f"{normalized_name} skal være tekst. "
-            f"Modtog: {type(value).__name__}."
+            f"{normalized_name} skal være tekst. Modtog: {type(value).__name__}."
         )
 
     normalized_value = value.strip()
 
     if not normalized_value:
-        raise ValueError(
-            f"{normalized_name} må ikke være tom."
-        )
+        raise ValueError(f"{normalized_name} må ikke være tom.")
 
     return normalized_value
 
@@ -45,9 +43,7 @@ def normalize_positive_id(
     normalized_name = _normalize_parameter_name(name)
 
     if isinstance(value, bool):
-        raise TypeError(
-            f"{normalized_name} må ikke være boolsk."
-        )
+        raise TypeError(f"{normalized_name} må ikke være boolsk.")
 
     if isinstance(value, int):
         normalized_value = value
@@ -55,14 +51,11 @@ def normalize_positive_id(
         text_value = value.strip()
 
         if not text_value:
-            raise ValueError(
-                f"{normalized_name} må ikke være tom."
-            )
+            raise ValueError(f"{normalized_name} må ikke være tom.")
 
         if not text_value.isdigit():
             raise ValueError(
-                f"{normalized_name} skal være numerisk. "
-                f"Modtog: {value!r}."
+                f"{normalized_name} skal være numerisk. Modtog: {value!r}."
             )
 
         normalized_value = int(text_value)
@@ -74,9 +67,7 @@ def normalize_positive_id(
         )
 
     if normalized_value <= 0:
-        raise ValueError(
-            f"{normalized_name} skal være større end 0."
-        )
+        raise ValueError(f"{normalized_name} skal være større end 0.")
 
     return normalized_value
 
@@ -90,14 +81,10 @@ def normalize_non_negative_int(
     normalized_name = _normalize_parameter_name(name)
 
     if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(
-            f"{normalized_name} skal være et heltal."
-        )
+        raise TypeError(f"{normalized_name} skal være et heltal.")
 
     if value < 0:
-        raise ValueError(
-            f"{normalized_name} må ikke være negativ."
-        )
+        raise ValueError(f"{normalized_name} må ikke være negativ.")
 
     return value
 
@@ -114,9 +101,7 @@ def validate_bool(
     normalized_name = _normalize_parameter_name(name)
 
     if not isinstance(value, bool):
-        raise TypeError(
-            f"{normalized_name} skal være True eller False."
-        )
+        raise TypeError(f"{normalized_name} skal være True eller False.")
 
     return value
 
@@ -132,43 +117,30 @@ def validate_year_range(
     to_year: int,
 ) -> tuple[int, int]:
     """Validerer et interval mellem to heltalsår."""
-    normalized_from_name = _normalize_parameter_name(
-        from_name
-    )
-    normalized_to_name = _normalize_parameter_name(
-        to_name
-    )
+    normalized_from_name = _normalize_parameter_name(from_name)
+    normalized_to_name = _normalize_parameter_name(to_name)
 
     if isinstance(from_year, bool) or not isinstance(
         from_year,
         int,
     ):
-        raise TypeError(
-            f"{normalized_from_name} skal være et heltal."
-        )
+        raise TypeError(f"{normalized_from_name} skal være et heltal.")
 
     if isinstance(to_year, bool) or not isinstance(
         to_year,
         int,
     ):
-        raise TypeError(
-            f"{normalized_to_name} skal være et heltal."
-        )
+        raise TypeError(f"{normalized_to_name} skal være et heltal.")
 
     if from_year < 0:
-        raise ValueError(
-            f"{normalized_from_name} må ikke være negativ."
-        )
+        raise ValueError(f"{normalized_from_name} må ikke være negativ.")
 
     if to_year < 0:
-        raise ValueError(
-            f"{normalized_to_name} må ikke være negativ."
-        )
+        raise ValueError(f"{normalized_to_name} må ikke være negativ.")
 
     if from_year > to_year:
         raise ValueError(
-            f"{normalized_from_name} må ikke være større "
-            f"end {normalized_to_name}."
+            f"{normalized_from_name} må ikke være større end {normalized_to_name}."
         )
 
     return from_year, to_year
@@ -184,25 +156,15 @@ def normalize_columns(
 ) -> list[str]:
     """Validerer kolonner til en Insubiz-eksport."""
     if isinstance(default_columns, (str, bytes)):
-        raise TypeError(
-            "default_columns skal være en sekvens af tekst."
-        )
+        raise TypeError("default_columns skal være en sekvens af tekst.")
 
-    selected_columns: Sequence[str] = (
-        default_columns
-        if columns is None
-        else columns
-    )
+    selected_columns: Sequence[str] = default_columns if columns is None else columns
 
     if isinstance(selected_columns, (str, bytes)):
-        raise TypeError(
-            "columns skal være en sekvens af tekst."
-        )
+        raise TypeError("columns skal være en sekvens af tekst.")
 
     if not selected_columns:
-        raise ValueError(
-            "columns må ikke være tom."
-        )
+        raise ValueError("columns må ikke være tom.")
 
     normalized_columns: list[str] = []
 
@@ -240,22 +202,16 @@ def decode_response(
 ) -> str:
     """Konverterer en binær fejlresponse til læsbar tekst."""
     if not isinstance(content, bytes):
-        raise TypeError(
-            "content skal være bytes."
-        )
+        raise TypeError("content skal være bytes.")
 
     if isinstance(max_length, bool) or not isinstance(
         max_length,
         int,
     ):
-        raise TypeError(
-            "max_length skal være et heltal."
-        )
+        raise TypeError("max_length skal være et heltal.")
 
     if max_length <= 0:
-        raise ValueError(
-            "max_length skal være større end 0."
-        )
+        raise ValueError("max_length skal være større end 0.")
 
     try:
         response_text = content.decode("utf-8")
@@ -293,14 +249,10 @@ def parse_excel_response(
         )
 
     if not content:
-        raise RuntimeError(
-            f"{normalized_resource_name} var tom."
-        )
+        raise RuntimeError(f"{normalized_resource_name} var tom.")
 
     if not isinstance(content_type, str):
-        raise TypeError(
-            "content_type skal være tekst."
-        )
+        raise TypeError("content_type skal være tekst.")
 
     _raise_for_non_excel_response(
         content=content,
@@ -326,8 +278,7 @@ def parse_excel_response(
 
         if worksheet is None:
             raise RuntimeError(
-                f"{normalized_resource_name} indeholder "
-                "ikke et aktivt regneark."
+                f"{normalized_resource_name} indeholder ikke et aktivt regneark."
             )
 
         rows = worksheet.iter_rows(
@@ -351,19 +302,13 @@ def parse_excel_response(
             row_values = list(row)
 
             if len(row_values) < len(headers):
-                row_values.extend(
-                    [None]
-                    * (
-                        len(headers)
-                        - len(row_values)
-                    )
-                )
+                row_values.extend([None] * (len(headers) - len(row_values)))
 
             result.append(
                 dict(
                     zip(
                         headers,
-                        row_values[:len(headers)],
+                        row_values[: len(headers)],
                     )
                 )
             )
@@ -379,10 +324,7 @@ def create_unique_headers(
 ) -> list[str]:
     """Opretter stabile og unikke Excel-kolonnenavne."""
     if isinstance(header_row, (str, bytes)):
-        raise TypeError(
-            "header_row skal være en iterable af "
-            "celleværdier."
-        )
+        raise TypeError("header_row skal være en iterable af celleværdier.")
 
     headers: list[str] = []
     used_headers: set[str] = set()
@@ -400,9 +342,7 @@ def create_unique_headers(
         duplicate_number = 2
 
         while header in used_headers:
-            header = (
-                f"{base_header}_{duplicate_number}"
-            )
+            header = f"{base_header}_{duplicate_number}"
             duplicate_number += 1
 
         used_headers.add(header)
@@ -417,17 +357,10 @@ def row_is_empty(
 ) -> bool:
     """Returnerer True, hvis hele Excel-rækken er tom."""
     if isinstance(row, (str, bytes)):
-        raise TypeError(
-            "row skal være en iterable af celleværdier."
-        )
+        raise TypeError("row skal være en iterable af celleværdier.")
 
     return all(
-        value is None
-        or (
-            isinstance(value, str)
-            and not value.strip()
-        )
-        for value in row
+        value is None or (isinstance(value, str) and not value.strip()) for value in row
     )
 
 
@@ -437,16 +370,12 @@ def row_is_empty(
 def _normalize_parameter_name(name: str) -> str:
     """Validerer et parameternavn til fejlbeskeder."""
     if not isinstance(name, str):
-        raise TypeError(
-            "name skal være tekst."
-        )
+        raise TypeError("name skal være tekst.")
 
     normalized_name = name.strip()
 
     if not normalized_name:
-        raise ValueError(
-            "name må ikke være tom."
-        )
+        raise ValueError("name må ikke være tom.")
 
     return normalized_name
 
@@ -492,14 +421,10 @@ def _create_base_header(
         column_number,
         int,
     ):
-        raise TypeError(
-            "column_number skal være et heltal."
-        )
+        raise TypeError("column_number skal være et heltal.")
 
     if column_number <= 0:
-        raise ValueError(
-            "column_number skal være større end 0."
-        )
+        raise ValueError("column_number skal være større end 0.")
 
     if value is None:
         return f"column_{column_number}"

@@ -10,11 +10,12 @@ from automation_server_client import (
 from playwright.async_api import (
     Locator,
     Page,
+)
+from playwright.async_api import (
     TimeoutError as PlaywrightTimeoutError,
 )
 
 from q_insubiz.selectors import InsubizSelectors
-
 
 logger = logging.getLogger(__name__)
 
@@ -67,14 +68,11 @@ def _get_credentials() -> tuple[str, str]:
         AutomationServer.from_environment()
     except Exception as error:
         raise RuntimeError(
-            "Forbindelsen til Automation Server "
-            "kunne ikke initialiseres."
+            "Forbindelsen til Automation Server kunne ikke initialiseres."
         ) from error
 
     try:
-        credential = Credential.get_credential(
-            CREDENTIAL_NAME
-        )
+        credential = Credential.get_credential(CREDENTIAL_NAME)
     except Exception as error:
         raise RuntimeError(
             "Credentialen kunne ikke hentes fra "
@@ -86,26 +84,16 @@ def _get_credentials() -> tuple[str, str]:
 
     if not isinstance(data, dict):
         raise RuntimeError(
-            "Data (JSON) på credentialen "
-            f"{CREDENTIAL_NAME!r} skal være "
-            "et JSON-objekt."
+            f"Data (JSON) på credentialen {CREDENTIAL_NAME!r} skal være et JSON-objekt."
         )
 
-    email = str(
-        data.get("email")
-        or ""
-    ).strip()
+    email = str(data.get("email") or "").strip()
 
-    password = str(
-        data.get("password")
-        or ""
-    )
+    password = str(data.get("password") or "")
 
     if not email:
         raise RuntimeError(
-            "Data (JSON) på credentialen "
-            f"{CREDENTIAL_NAME!r} mangler feltet "
-            "'email'."
+            f"Data (JSON) på credentialen {CREDENTIAL_NAME!r} mangler feltet 'email'."
         )
 
     if not password:
@@ -116,8 +104,7 @@ def _get_credentials() -> tuple[str, str]:
         )
 
     logger.info(
-        "Insubiz-login blev hentet fra Data (JSON) "
-        "på credentialen %s.",
+        "Insubiz-login blev hentet fra Data (JSON) på credentialen %s.",
         CREDENTIAL_NAME,
     )
 
@@ -139,14 +126,11 @@ async def launch_insubiz(
     Screenshot forsøges kun ved fejl i det konkrete Playwright/UI-flow.
     """
     if page is None:
-        raise ValueError(
-            "page må ikke være None."
-        )
+        raise ValueError("page må ikke være None.")
 
     if page.is_closed():
         raise RuntimeError(
-            "Insubiz kunne ikke åbnes, fordi "
-            "Playwright-siden er lukket."
+            "Insubiz kunne ikke åbnes, fordi Playwright-siden er lukket."
         )
 
     # Ikke en UI- eller Playwright-handling.
@@ -178,13 +162,9 @@ async def launch_insubiz(
             error_message=error_message,
         )
 
-        logger.exception(
-            message
-        )
+        logger.exception(message)
 
-        raise RuntimeError(
-            message
-        ) from error
+        raise RuntimeError(message) from error
 
 
 # --------------------------------------------------
@@ -203,27 +183,21 @@ async def _udfoer_login_via_ui(
         page=page,
     )
 
-    email_input = page.locator(
-        InsubizSelectors.EMAIL_INPUT
-    ).first
+    email_input = page.locator(InsubizSelectors.EMAIL_INPUT).first
 
     await email_input.wait_for(
         state="visible",
         timeout=ELEMENT_TIMEOUT_MS,
     )
 
-    login_form = email_input.locator(
-        "xpath=ancestor::form[1]"
-    )
+    login_form = email_input.locator("xpath=ancestor::form[1]")
 
     await login_form.wait_for(
         state="visible",
         timeout=ELEMENT_TIMEOUT_MS,
     )
 
-    password_input = login_form.locator(
-        InsubizSelectors.PASSWORD_INPUT
-    ).first
+    password_input = login_form.locator(InsubizSelectors.PASSWORD_INPUT).first
 
     await password_input.wait_for(
         state="visible",
@@ -254,8 +228,7 @@ async def _udfoer_login_via_ui(
     )
 
     logger.info(
-        "Login i Insubiz blev gennemført. "
-        "URL: %s.",
+        "Login i Insubiz blev gennemført. URL: %s.",
         page.url,
     )
 
@@ -267,17 +240,11 @@ async def _udfyld_emailfelt(
     email: str,
 ) -> None:
     """Udfylder og kontrollerer e-mailfeltet via Playwright."""
-    await email_input.fill(
-        email
-    )
+    await email_input.fill(email)
 
-    await page.wait_for_timeout(
-        FIELD_PAUSE_MS
-    )
+    await page.wait_for_timeout(FIELD_PAUSE_MS)
 
-    actual_email = (
-        await email_input.input_value()
-    ).strip()
+    actual_email = (await email_input.input_value()).strip()
 
     if actual_email != email:
         raise RuntimeError(
@@ -287,13 +254,9 @@ async def _udfyld_emailfelt(
             f"Indsat længde: {len(actual_email)}."
         )
 
-    await email_input.press(
-        "Tab"
-    )
+    await email_input.press("Tab")
 
-    await page.wait_for_timeout(
-        FIELD_PAUSE_MS
-    )
+    await page.wait_for_timeout(FIELD_PAUSE_MS)
 
 
 async def _udfyld_adgangskodefelt(
@@ -303,17 +266,11 @@ async def _udfyld_adgangskodefelt(
     password: str,
 ) -> None:
     """Udfylder og kontrollerer adgangskodefeltet via Playwright."""
-    await password_input.fill(
-        password
-    )
+    await password_input.fill(password)
 
-    await page.wait_for_timeout(
-        FIELD_PAUSE_MS
-    )
+    await page.wait_for_timeout(FIELD_PAUSE_MS)
 
-    actual_password = (
-        await password_input.input_value()
-    )
+    actual_password = await password_input.input_value()
 
     if actual_password != password:
         raise RuntimeError(
@@ -331,9 +288,7 @@ async def _udfoer_loginhandling(
     password_input: Locator,
 ) -> None:
     """Klikker på login-knappen eller bruger Enter som fallback."""
-    login_button = login_form.locator(
-        InsubizSelectors.LOGIN_BUTTON
-    ).first
+    login_button = login_form.locator(InsubizSelectors.LOGIN_BUTTON).first
 
     if await login_button.count() > 0:
         await login_button.wait_for(
@@ -347,31 +302,20 @@ async def _udfoer_loginhandling(
             )
 
             message = (
-                "Login-knappen er deaktiveret "
-                "efter udfyldning af loginformularen."
+                "Login-knappen er deaktiveret efter udfyldning af loginformularen."
             )
 
             if error_message:
-                message += (
-                    " Fejlbesked fra Insubiz: "
-                    f"{error_message}"
-                )
+                message += f" Fejlbesked fra Insubiz: {error_message}"
 
-            raise RuntimeError(
-                message
-            )
+            raise RuntimeError(message)
 
         await login_button.click()
         return
 
-    logger.warning(
-        "Login-knappen blev ikke fundet. "
-        "Forsøger login med Enter."
-    )
+    logger.warning("Login-knappen blev ikke fundet. Forsøger login med Enter.")
 
-    await password_input.press(
-        "Enter"
-    )
+    await password_input.press("Enter")
 
 
 # --------------------------------------------------
@@ -392,14 +336,11 @@ async def _aabn_login_med_genforsoeg(
     ):
         if page.is_closed():
             raise RuntimeError(
-                "Playwright-siden blev lukket under "
-                "navigationen til Insubiz."
+                "Playwright-siden blev lukket under navigationen til Insubiz."
             )
 
         logger.info(
-            "Åbner Insubiz-login. "
-            "Forsøg %s af %s. "
-            "Timeout: %s sekunder.",
+            "Åbner Insubiz-login. Forsøg %s af %s. Timeout: %s sekunder.",
             forsoeg,
             NAVIGATION_MAX_FORSOEG,
             NAVIGATION_TIMEOUT_MS // 1_000,
@@ -412,16 +353,9 @@ async def _aabn_login_med_genforsoeg(
                 timeout=NAVIGATION_TIMEOUT_MS,
             )
 
-            http_status = (
-                response.status
-                if response is not None
-                else None
-            )
+            http_status = response.status if response is not None else None
 
-            if (
-                http_status is not None
-                and http_status >= 400
-            ):
+            if http_status is not None and http_status >= 400:
                 raise RuntimeError(
                     "Insubiz-login returnerede en "
                     "HTTP-fejl i browseren. "
@@ -430,10 +364,7 @@ async def _aabn_login_med_genforsoeg(
                 )
 
             logger.info(
-                "Insubiz-login blev indlæst. "
-                "Forsøg: %s. "
-                "HTTP-status: %r. "
-                "URL: %s.",
+                "Insubiz-login blev indlæst. Forsøg: %s. HTTP-status: %r. URL: %s.",
                 forsoeg,
                 http_status,
                 page.url,
@@ -444,9 +375,7 @@ async def _aabn_login_med_genforsoeg(
             sidste_fejl = error
 
             logger.warning(
-                "Timeout ved åbning af Insubiz-login. "
-                "Forsøg %s af %s. "
-                "Aktuel URL: %s.",
+                "Timeout ved åbning af Insubiz-login. Forsøg %s af %s. Aktuel URL: %s.",
                 forsoeg,
                 NAVIGATION_MAX_FORSOEG,
                 page.url,
@@ -460,8 +389,7 @@ async def _aabn_login_med_genforsoeg(
             sidste_fejl = error
 
             logger.warning(
-                "Insubiz-login kunne ikke åbnes i browseren. "
-                "Forsøg %s af %s. Fejl: %s",
+                "Insubiz-login kunne ikke åbnes i browseren. Forsøg %s af %s. Fejl: %s",
                 forsoeg,
                 NAVIGATION_MAX_FORSOEG,
                 error,
@@ -470,20 +398,14 @@ async def _aabn_login_med_genforsoeg(
         if forsoeg >= NAVIGATION_MAX_FORSOEG:
             break
 
-        pause_ms = (
-            NAVIGATION_RETRY_PAUSE_MS
-            * forsoeg
-        )
+        pause_ms = NAVIGATION_RETRY_PAUSE_MS * forsoeg
 
         logger.info(
-            "Venter %s sekunder før næste "
-            "navigationsforsøg.",
+            "Venter %s sekunder før næste navigationsforsøg.",
             pause_ms / 1_000,
         )
 
-        await page.wait_for_timeout(
-            pause_ms
-        )
+        await page.wait_for_timeout(pause_ms)
 
     raise RuntimeError(
         "Insubiz-login kunne ikke indlæses i browseren "
@@ -505,13 +427,10 @@ async def _stop_eventuel_navigation(
         return
 
     try:
-        await page.evaluate(
-            "window.stop()"
-        )
+        await page.evaluate("window.stop()")
     except Exception:
         logger.debug(
-            "En hængende browsernavigation kunne "
-            "ikke stoppes med window.stop().",
+            "En hængende browsernavigation kunne ikke stoppes med window.stop().",
             exc_info=True,
         )
 
@@ -538,30 +457,16 @@ async def _vent_paa_gennemfoert_login(
             page=page,
         )
 
-        message = (
-            "Loginformularen forsvandt ikke efter "
-            "loginforsøget."
-        )
+        message = "Loginformularen forsvandt ikke efter loginforsøget."
 
         if error_message:
-            message += (
-                " Fejlbesked fra Insubiz: "
-                f"{error_message}"
-            )
+            message += f" Fejlbesked fra Insubiz: {error_message}"
 
-        message += (
-            f" URL: {page.url}. "
-            "Timeout: "
-            f"{LOGIN_TIMEOUT_MS // 1_000} sekunder."
-        )
+        message += f" URL: {page.url}. Timeout: {LOGIN_TIMEOUT_MS // 1_000} sekunder."
 
-        raise RuntimeError(
-            message
-        ) from error
+        raise RuntimeError(message) from error
 
-    await page.wait_for_timeout(
-        LOGIN_PAUSE_MS
-    )
+    await page.wait_for_timeout(LOGIN_PAUSE_MS)
 
 
 # --------------------------------------------------
@@ -591,8 +496,7 @@ async def _tag_screenshot_ved_playwright_fejl(
         return
 
     screenshot_name = (
-        f"{SCREENSHOT_NAME_PREFIX}_"
-        f"{_normaliser_screenshot_navn(type(error).__name__)}"
+        f"{SCREENSHOT_NAME_PREFIX}_{_normaliser_screenshot_navn(type(error).__name__)}"
     )
 
     try:
@@ -619,9 +523,7 @@ def _normaliser_screenshot_navn(
     value: str,
 ) -> str:
     """Normaliserer en tekst til et sikkert screenshotnavn."""
-    normalized_value = str(
-        value
-    ).strip()
+    normalized_value = str(value).strip()
 
     for character in (
         " ",
@@ -656,22 +558,11 @@ def _opret_ui_fejlbesked(
         message = "Login via Insubiz-brugerfladen fejlede."
 
     if error_message:
-        message += (
-            " Fejlbesked fra Insubiz: "
-            f"{error_message}"
-        )
+        message += f" Fejlbesked fra Insubiz: {error_message}"
 
-    current_url = (
-        page.url
-        if not page.is_closed()
-        else "[siden er lukket]"
-    )
+    current_url = page.url if not page.is_closed() else "[siden er lukket]"
 
-    message += (
-        f" URL: {current_url}. "
-        f"Fejltype: {type(error).__name__}. "
-        f"Fejl: {error}"
-    )
+    message += f" URL: {current_url}. Fejltype: {type(error).__name__}. Fejl: {error}"
 
     return message
 
@@ -689,9 +580,7 @@ async def _get_error_message(
     if page.is_closed():
         return ""
 
-    error_locator = page.locator(
-        InsubizSelectors.LOGIN_ERROR
-    ).first
+    error_locator = page.locator(InsubizSelectors.LOGIN_ERROR).first
 
     try:
         if await error_locator.count() == 0:
@@ -706,8 +595,7 @@ async def _get_error_message(
 
     except Exception:
         logger.debug(
-            "En eventuel UI-fejlbesked kunne ikke "
-            "aflæses.",
+            "En eventuel UI-fejlbesked kunne ikke aflæses.",
             exc_info=True,
         )
         return ""

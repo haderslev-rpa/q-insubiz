@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from playwright.async_api import (
     Page,
     TimeoutError as PlaywrightTimeoutError,
@@ -21,8 +24,40 @@ from q_insubiz.utils import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 # --------------------------------------------------
-# Testindstillinger
+# PROJEKTSTI OG .ENV
+# --------------------------------------------------
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+ENV_PATH = PROJECT_ROOT / ".env"
+
+if not ENV_PATH.exists():
+    raise FileNotFoundError(
+        ".env-filen blev ikke fundet. "
+        f"Forventet placering: {ENV_PATH}."
+    )
+
+env_loaded = load_dotenv(
+    dotenv_path=ENV_PATH,
+    override=True,
+)
+
+if not env_loaded:
+    logger.warning(
+        ".env-filen blev fundet, men python-dotenv "
+        "indlæste ingen nye miljøvariabler. "
+        "Variablerne kan allerede være indlæst. "
+        "Fil: %s.",
+        ENV_PATH,
+    )
+
+
+# --------------------------------------------------
+# TESTINDSTILLINGER
 # --------------------------------------------------
 
 HEADLESS = False
@@ -33,7 +68,7 @@ UI_WAIT_MS = 1_500
 
 BASE_URL = "https://start.insubiz.dk"
 
-SKADE_ID = 2489380
+SKADE_ID: int | str = 2491158
 
 CPR_NUMMER = os.getenv(
     "CPR_NUMMER",
@@ -58,8 +93,9 @@ BILAG_NAVN = (
 
 
 # --------------------------------------------------
-# Testinput
+# TESTINPUT
 # --------------------------------------------------
+
 
 def valider_testinput() -> int:
     """
@@ -75,7 +111,7 @@ def valider_testinput() -> int:
     if not CPR_NUMMER:
         raise RuntimeError(
             "Miljøvariablen CPR_NUMMER mangler. "
-            "Angiv CPR_NUMMER før testen køres."
+            f"Kontrollér filen: {ENV_PATH}."
         )
 
     if not CPR_NUMMER.isdigit():
@@ -100,7 +136,8 @@ def valider_testinput() -> int:
     for name, value in testvaerdier.items():
         if not isinstance(value, str):
             raise TypeError(
-                f"{name} skal være tekst."
+                f"{name} skal være tekst. "
+                f"Modtog: {type(value).__name__}."
             )
 
         if not value.strip():
@@ -108,12 +145,23 @@ def valider_testinput() -> int:
                 f"{name} må ikke være tom."
             )
 
+    logger.info(
+        "Testinput blev valideret. "
+        "Skade-id: %s. "
+        "CPR-nummer fundet: %s. "
+        "CPR-nummerets længde: %s.",
+        normalized_skade_id,
+        bool(CPR_NUMMER),
+        len(CPR_NUMMER),
+    )
+
     return normalized_skade_id
 
 
 # --------------------------------------------------
-# Åbn konkret skade
+# ÅBN KONKRET SKADE
 # --------------------------------------------------
+
 
 async def aabn_skade_via_id(
     *,
@@ -130,6 +178,12 @@ async def aabn_skade_via_id(
     normalized_skade_id = normalize_positive_id(
         name="skade_id",
         value=skade_id,
+    )
+
+    logger.info(
+        "Åbner skade i Insubiz. "
+        "Skade-id: %s.",
+        normalized_skade_id,
     )
 
     await klik_paa_skade(
@@ -152,7 +206,9 @@ async def aabn_skade_via_id(
             raise RuntimeError(
                 "Navigation til skaden fik timeout. "
                 f"Skade-id: {normalized_skade_id}. "
-                f"URL: {skade_url}."
+                f"URL: {skade_url}. "
+                "Timeout: "
+                f"{NAVIGATION_TIMEOUT_MS // 1_000} sekunder."
             ) from error
 
     await page.wait_for_load_state(
@@ -164,6 +220,14 @@ async def aabn_skade_via_id(
     )
 
     if str(normalized_skade_id) in page.url:
+        logger.info(
+            "Skaden blev åbnet via URL. "
+            "Skade-id: %s. "
+            "URL: %s.",
+            normalized_skade_id,
+            page.url,
+        )
+
         return
 
     synligt_skade_id = page.get_by_text(
@@ -184,10 +248,17 @@ async def aabn_skade_via_id(
             f"Aktuel URL: {page.url}."
         ) from error
 
+    logger.info(
+        "Skaden blev bekræftet via synligt skade-id. "
+        "Skade-id: %s.",
+        normalized_skade_id,
+    )
+
 
 # --------------------------------------------------
-# Resultatkontrol
+# RESULTATKONTROL
 # --------------------------------------------------
+
 
 def kontroller_resultat(
     *,
@@ -231,8 +302,8 @@ def kontroller_resultat(
         "forsendelsestype": FORSENDELSESTYPE,
         "hoveddokument": HOVEDDOKUMENT_NAVN,
         "bilag": BILAG_NAVN,
-        "test": True,
-        "sendt": False,
+        "test": False,
+        "sendt": True,
     }
 
     for (
@@ -283,6 +354,14 @@ def kontroller_resultat(
         value=resultat.get(
             "bilagsvaelger_rækker"
         ),
+    )
+
+    logger.info(
+        "Resultatet fra Digital Post blev valideret. "
+        "Testtilstand: %s. "
+        "Sendt: %s.",
+        resultat.get("test"),
+        resultat.get("sendt"),
     )
 
 
@@ -399,8 +478,9 @@ def _normalize_document_name(
 
 
 # --------------------------------------------------
-# Udskrift
+# UDSKRIFT
 # --------------------------------------------------
+
 
 def udskriv_testindstillinger(
     *,
@@ -411,7 +491,7 @@ def udskriv_testindstillinger(
     print("=" * 80)
     print(
         "TESTER SEND DIGITAL POST "
-        "UDEN AFSENDELSE"
+        "MED RIGTIG AFSENDELSE"
     )
     print("=" * 80)
     print(f"Skade-id: {skade_id}")
@@ -427,8 +507,13 @@ def udskriv_testindstillinger(
     )
     print(f"Bilag: {BILAG_NAVN}")
     print("CPR-nummer: [skjult]")
-    print("Testtilstand: Ja")
-    print("Afsluttende Send-knap klikkes: Nej")
+    print(
+        "CPR-nummer indlæst: "
+        f"{'Ja' if bool(CPR_NUMMER) else 'Nej'}"
+    )
+    print("Testtilstand: Nej")
+    print("Afsluttende Send-knap klikkes: Ja")
+    print("Digital Post bliver sendt: Ja")
     print("=" * 80)
 
 
@@ -437,7 +522,7 @@ def udskriv_resultat(
     resultat: dict[str, Any],
     skade_id: int,
 ) -> None:
-    """Udskriver det kontrollerede testresultat."""
+    """Udskriver det kontrollerede afsendelsesresultat."""
     hoveddokument_rows = resultat[
         "hoveddokumentvaelger_rækker"
     ]
@@ -448,9 +533,7 @@ def udskriv_resultat(
 
     print()
     print("=" * 80)
-    print(
-        "DIGITAL POST ER UDFYLDT KORREKT"
-    )
+    print("DIGITAL POST BLEV SENDT")
     print("=" * 80)
     print(f"Skade-id: {skade_id}")
     print(
@@ -478,30 +561,38 @@ def udskriv_resultat(
         "Antal rækker i bilagsvælger: "
         f"{len(bilag_rows)}"
     )
-    print("Testtilstand: Ja")
     print(
-        "Afsluttende Send-knap klikket: Nej"
+        "Testtilstand: "
+        f"{'Ja' if resultat['test'] else 'Nej'}"
     )
-    print("Digital Post sendt: Nej")
+    print(
+        "Afsluttende Send-knap klikket: "
+        f"{'Ja' if resultat['sendt'] else 'Nej'}"
+    )
+    print(
+        "Digital Post sendt: "
+        f"{'Ja' if resultat['sendt'] else 'Nej'}"
+    )
     print("=" * 80)
     print()
     print("TEST BESTÅET")
 
 
 # --------------------------------------------------
-# Integrationstest
+# INTEGRATIONSTEST
 # --------------------------------------------------
 
-async def test_send_digital_post_uden_afsendelse(
+
+async def test_send_digital_post_med_afsendelse(
 ) -> None:
     """
-    Tester produktionsfunktionen send_digital_post.
+    Tester send_digital_post med rigtig afsendelse.
 
     Funktionen udfylder Digital Post-dialogen, vælger
-    forsendelsestypen, vedhæfter hoveddokument og bilag
-    og kontrollerer begge dokumentchips.
+    forsendelsestypen, vedhæfter hoveddokument og bilag,
+    kontrollerer begge dokumentchips og klikker på Send.
 
-    test=True betyder, at Send-knappen ikke klikkes.
+    test=False betyder, at Digital Post bliver sendt.
     """
     normalized_skade_id = valider_testinput()
 
@@ -523,6 +614,12 @@ async def test_send_digital_post_uden_afsendelse(
             skade_id=normalized_skade_id,
         )
 
+        logger.info(
+            "Starter rigtig afsendelse af Digital Post. "
+            "Skade-id: %s.",
+            normalized_skade_id,
+        )
+
         resultat = await send_digital_post(
             page=page,
             cpr_nummer=CPR_NUMMER,
@@ -532,7 +629,7 @@ async def test_send_digital_post_uden_afsendelse(
                 HOVEDDOKUMENT_NAVN
             ),
             bilag_navn=BILAG_NAVN,
-            test=True,
+            test=False,
         )
 
         kontroller_resultat(
@@ -553,6 +650,8 @@ async def test_send_digital_post_uden_afsendelse(
         print("=" * 80)
         print("TEST FEJLEDE")
         print("=" * 80)
+        print(f"Skade-id: {normalized_skade_id}")
+        print(f"Fejltype: {type(error).__name__}")
         print(f"Fejl: {error}")
 
         if (
@@ -565,6 +664,12 @@ async def test_send_digital_post_uden_afsendelse(
 
         print("=" * 80)
 
+        logger.exception(
+            "Test af Digital Post med afsendelse fejlede. "
+            "Skade-id: %s.",
+            normalized_skade_id,
+        )
+
         raise
 
     finally:
@@ -572,10 +677,11 @@ async def test_send_digital_post_uden_afsendelse(
 
 
 # --------------------------------------------------
-# Direkte kørsel fra VS Code
+# DIREKTE KØRSEL FRA VS CODE
 # --------------------------------------------------
+
 
 if __name__ == "__main__":
     asyncio.run(
-        test_send_digital_post_uden_afsendelse()
+        test_send_digital_post_med_afsendelse()
     )

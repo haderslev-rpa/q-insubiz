@@ -25,6 +25,7 @@ from automation_server_client import (
     AutomationServer,
     Credential,
 )
+from playwright.async_api import APIRequestContext
 from q_haderslev_vbo.playwright.playwright_run_recorder import (
     PlaywrightRunRecorder,
 )
@@ -35,7 +36,9 @@ from q_insubiz.api.auth_manager import (
 from q_insubiz.api.client import (
     InsubizApiClient,
 )
-
+from q_insubiz.api.request_context_auth_manager import (
+    RequestContextAuthManager,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,7 @@ DEFAULT_DEBUG = False
 # BOOL-KONFIGURATION
 # --------------------------------------------------
 
+
 def _normalize_bool(
     value: Any,
     *,
@@ -66,9 +70,7 @@ def _normalize_bool(
 ) -> bool:
     """Konverterer en konfigurationsværdi til bool."""
     if not isinstance(default, bool):
-        raise TypeError(
-            "default skal være True eller False."
-        )
+        raise TypeError("default skal være True eller False.")
 
     if value is None:
         return default
@@ -76,10 +78,7 @@ def _normalize_bool(
     if isinstance(value, bool):
         return value
 
-    if (
-        isinstance(value, int)
-        and not isinstance(value, bool)
-    ):
+    if isinstance(value, int) and not isinstance(value, bool):
         return value != 0
 
     if isinstance(value, str):
@@ -105,15 +104,14 @@ def _normalize_bool(
             return False
 
     raise ValueError(
-        "Boolean-konfigurationen havde en "
-        "ugyldig værdi. "
-        f"Modtog: {value!r}."
+        f"Boolean-konfigurationen havde en ugyldig værdi. Modtog: {value!r}."
     )
 
 
 # --------------------------------------------------
 # AUTOMATION SERVER
 # --------------------------------------------------
+
 
 def _initialize_automation_server() -> None:
     """Initialiserer forbindelsen til Automation Server."""
@@ -122,8 +120,7 @@ def _initialize_automation_server() -> None:
 
     except Exception as error:
         raise RuntimeError(
-            "Forbindelsen til Automation Server "
-            "kunne ikke initialiseres."
+            "Forbindelsen til Automation Server kunne ikke initialiseres."
         ) from error
 
 
@@ -132,9 +129,7 @@ def _get_credential() -> Credential:
     _initialize_automation_server()
 
     try:
-        return Credential.get_credential(
-            CREDENTIAL_NAME
-        )
+        return Credential.get_credential(CREDENTIAL_NAME)
 
     except Exception as error:
         raise RuntimeError(
@@ -154,7 +149,7 @@ def _get_configuration(
         return {}
 
     if not isinstance(configuration, dict):
-        raise RuntimeError(
+        raise TypeError(
             "Automation Server-credentialens Data "
             "havde et ugyldigt format. "
             "Forventede en dictionary, men modtog "
@@ -168,6 +163,7 @@ def _get_configuration(
 # HEADLESS OG DEBUG
 # --------------------------------------------------
 
+
 def _get_headless_setting(
     *,
     configuration: dict[str, Any],
@@ -175,16 +171,11 @@ def _get_headless_setting(
 ) -> bool:
     """Bestemmer om browseren skal køre headless."""
     if not isinstance(configuration, dict):
-        raise TypeError(
-            "configuration skal være en dictionary."
-        )
+        raise TypeError("configuration skal være en dictionary.")
 
     if headless is not None:
         if not isinstance(headless, bool):
-            raise TypeError(
-                "headless skal være True, False "
-                "eller None."
-            )
+            raise TypeError("headless skal være True, False eller None.")
 
         return headless
 
@@ -206,16 +197,11 @@ def _get_debug_setting(
 ) -> bool:
     """Bestemmer processens debug-indstilling."""
     if not isinstance(configuration, dict):
-        raise TypeError(
-            "configuration skal være en dictionary."
-        )
+        raise TypeError("configuration skal være en dictionary.")
 
     if debug is not None:
         if not isinstance(debug, bool):
-            raise TypeError(
-                "debug skal være True, False "
-                "eller None."
-            )
+            raise TypeError("debug skal være True, False eller None.")
 
         return debug
 
@@ -233,6 +219,7 @@ def _get_debug_setting(
 # --------------------------------------------------
 # RECORDER
 # --------------------------------------------------
+
 
 def _validate_recorder(
     *,
@@ -264,6 +251,7 @@ def _validate_recorder(
 # --------------------------------------------------
 # PUBLIC FACTORY
 # --------------------------------------------------
+
 
 def create_api_client(
     *,
@@ -313,11 +301,7 @@ def create_api_client(
         recorder=recorder,
     )
 
-    resolved_recorder = (
-        recorder
-        if resolved_debug
-        else None
-    )
+    resolved_recorder = recorder if resolved_debug else None
 
     if resolved_debug and resolved_recorder is None:
         logger.warning(
@@ -328,8 +312,7 @@ def create_api_client(
 
     if not resolved_debug and recorder is not None:
         logger.info(
-            "Den leverede PlaywrightRunRecorder anvendes ikke, "
-            "fordi debug=False."
+            "Den leverede PlaywrightRunRecorder anvendes ikke, fordi debug=False."
         )
 
     logger.info(
@@ -354,9 +337,34 @@ def create_api_client(
     )
 
 
+def create_api_client_from_request_context(
+    *,
+    request_context: APIRequestContext,
+) -> InsubizApiClient:
+    """Opretter en API-klient på en eksisterende request-context.
+
+    Request-contexten ejes af den kaldende BrowserContext. Factoryen
+    starter derfor ikke en ny browser, udfører ikke et ekstra login og
+    lukker ikke request-contexten.
+    """
+    if request_context is None:
+        raise TypeError("request_context må ikke være None.")
+
+    auth_manager = RequestContextAuthManager(
+        request_context=request_context,
+    )
+
+    logger.info("Opretter Insubiz API-klient på en eksisterende APIRequestContext.")
+
+    return InsubizApiClient(
+        auth_manager=auth_manager,
+    )
+
+
 __all__ = [
     "CREDENTIAL_NAME",
     "DEFAULT_DEBUG",
     "DEFAULT_HEADLESS",
     "create_api_client",
+    "create_api_client_from_request_context",
 ]

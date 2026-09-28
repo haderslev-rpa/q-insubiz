@@ -16,7 +16,6 @@ from q_insubiz.functionality.launch import (
     launch_insubiz,
 )
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -40,9 +39,7 @@ class InsubizAuthManager:
     ) -> None:
         """Opretter manageren med browser- og recorderindstillinger."""
         if not isinstance(headless, bool):
-            raise TypeError(
-                "headless skal være True eller False."
-            )
+            raise TypeError("headless skal være True eller False.")
 
         self._headless = headless
         self._recorder = recorder
@@ -107,23 +104,17 @@ class InsubizAuthManager:
             await self.close()
 
         try:
-            self._playwright = (
-                await async_playwright().start()
+            self._playwright = await async_playwright().start()
+
+            self._browser = await self._playwright.chromium.launch(
+                headless=self._headless,
             )
 
-            self._browser = (
-                await self._playwright.chromium.launch(
-                    headless=self._headless,
-                )
-            )
-
-            self._context = (
-                await self._browser.new_context(
-                    viewport={
-                        "width": 1440,
-                        "height": 1000,
-                    },
-                )
+            self._context = await self._browser.new_context(
+                viewport={
+                    "width": 1440,
+                    "height": 1000,
+                },
             )
 
             self._page = await self._context.new_page()
@@ -134,16 +125,12 @@ class InsubizAuthManager:
             )
 
             logger.info(
-                "Den autentificerede Insubiz-session "
-                "blev startet. Headless: %s.",
+                "Den autentificerede Insubiz-session blev startet. Headless: %s.",
                 self._headless,
             )
 
         except Exception:
-            logger.exception(
-                "Den autentificerede Insubiz-session "
-                "kunne ikke startes."
-            )
+            logger.exception("Den autentificerede Insubiz-session kunne ikke startes.")
 
             await self.close()
             raise
@@ -157,16 +144,10 @@ class InsubizAuthManager:
         await self.start()
 
         if self._page is None:
-            raise RuntimeError(
-                "Den autentificerede Insubiz-side "
-                "blev ikke oprettet."
-            )
+            raise RuntimeError("Den autentificerede Insubiz-side blev ikke oprettet.")
 
         if self._page.is_closed():
-            raise RuntimeError(
-                "Den autentificerede Insubiz-side "
-                "er lukket."
-            )
+            raise RuntimeError("Den autentificerede Insubiz-side er lukket.")
 
         return self._page
 
@@ -180,17 +161,13 @@ class InsubizAuthManager:
         await self.start()
 
         if self._context is None:
-            raise RuntimeError(
-                "Insubiz-konteksten blev ikke oprettet."
-            )
+            raise RuntimeError("Insubiz-konteksten blev ikke oprettet.")
 
         return self._context.request
 
     async def refresh(self) -> None:
         """Lukker sessionen og logger ind igen."""
-        logger.info(
-            "Fornyer den autentificerede Insubiz-session."
-        )
+        logger.info("Fornyer den autentificerede Insubiz-session.")
 
         await self.close()
         await self.start()
@@ -230,31 +207,21 @@ class InsubizAuthManager:
             try:
                 await context.close()
             except Exception:
-                logger.exception(
-                    "Insubiz-browserkonteksten kunne "
-                    "ikke lukkes korrekt."
-                )
+                logger.exception("Insubiz-browserkonteksten kunne ikke lukkes korrekt.")
 
         if browser is not None:
             try:
                 await browser.close()
             except Exception:
-                logger.exception(
-                    "Insubiz-browseren kunne ikke "
-                    "lukkes korrekt."
-                )
+                logger.exception("Insubiz-browseren kunne ikke lukkes korrekt.")
 
         if playwright is not None:
             try:
                 await playwright.stop()
             except Exception:
-                logger.exception(
-                    "Playwright kunne ikke stoppes korrekt."
-                )
+                logger.exception("Playwright kunne ikke stoppes korrekt.")
 
-        logger.info(
-            "Den autentificerede Insubiz-session er lukket."
-        )
+        logger.info("Den autentificerede Insubiz-session er lukket.")
 
 
 __all__ = [

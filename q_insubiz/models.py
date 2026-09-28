@@ -58,29 +58,21 @@ class SendSkadeTilEasyResultat:
             raise ValueError("skade_id skal være større end 0.")
 
         if self.allerede_sendt and self.sendt_nu:
-            raise ValueError(
-                "allerede_sendt og sendt_nu må ikke begge "
-                "være True."
-            )
+            raise ValueError("allerede_sendt og sendt_nu må ikke begge være True.")
 
         if not self.allerede_sendt and not self.sendt_nu:
             raise ValueError(
-                "Præcis ét af felterne allerede_sendt og "
-                "sendt_nu skal være True."
+                "Præcis ét af felterne allerede_sendt og sendt_nu skal være True."
             )
 
-        if self.allerede_sendt and (
-            self.afsendelses_response is not None
-        ):
+        if self.allerede_sendt and (self.afsendelses_response is not None):
             raise ValueError(
-                "afsendelses_response skal være None, når "
-                "skaden allerede var sendt."
+                "afsendelses_response skal være None, når skaden allerede var sendt."
             )
 
         if self.sendt_nu and self.afsendelses_response is None:
             raise ValueError(
-                "afsendelses_response mangler, selv om "
-                "skaden blev sendt nu."
+                "afsendelses_response mangler, selv om skaden blev sendt nu."
             )
 
 
@@ -115,14 +107,10 @@ class SendDigitalPostResultat:
 
         for feltnavn, value in tekstfelter.items():
             if not isinstance(value, str):
-                raise TypeError(
-                    f"{feltnavn} skal være tekst."
-                )
+                raise TypeError(f"{feltnavn} skal være tekst.")
 
             if not value.strip():
-                raise ValueError(
-                    f"{feltnavn} må ikke være tom."
-                )
+                raise ValueError(f"{feltnavn} må ikke være tom.")
 
         if not isinstance(self.test, bool):
             raise TypeError("test skal være boolsk.")
@@ -131,14 +119,10 @@ class SendDigitalPostResultat:
             raise TypeError("sendt skal være boolsk.")
 
         if self.test and self.sendt:
-            raise ValueError(
-                "sendt må ikke være True, når test er True."
-            )
+            raise ValueError("sendt må ikke være True, når test er True.")
 
         if not self.test and not self.sendt:
-            raise ValueError(
-                "sendt skal være True, når test er False."
-            )
+            raise ValueError("sendt skal være True, når test er False.")
 
 
 __all__ = [
