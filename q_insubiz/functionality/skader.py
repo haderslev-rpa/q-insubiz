@@ -143,7 +143,7 @@ async def hent_skade_via_id(
         ) from error
 
     if not isinstance(response, dict):
-        raise RuntimeError(
+        raise TypeError(
             f"GetIncidentById returnerede et uventet format: {type(response).__name__}."
         )
     if not response:
@@ -280,7 +280,7 @@ async def send_skade_til_easy(
                 "id": normalized_skade_id,
             },
         )
-    except Exception as send_error:
+    except Exception as send_error:  # noqa: BLE001
         return await _haandter_easy_sendefejl(
             api_client=api_client,
             skade_id=normalized_skade_id,
@@ -397,7 +397,7 @@ async def _haandter_easy_sendefejl(
             api_client=api_client,
             skade_id=skade_id,
         )
-    except Exception as kontrol_error:
+    except Exception as kontrol_error:  # noqa: BLE001
         raise RuntimeError(
             "Skaden kunne ikke sendes til EASY, og efterkontrollen "
             "kunne ikke hente skaden. "
@@ -611,7 +611,13 @@ async def download_easy_rapport_og_gem_i_mappe(page: Page) -> None:
             if await candidate.count() and await candidate.is_visible():
                 download_rapport = candidate
                 break
-        except Exception:
+        except PlaywrightTimeoutError as error:
+            logger.debug(
+                "Rapportmenuen kunne ikke anvendes for knap %s. "
+                "Forsøger næste menu-knap.",
+                index,
+                exc_info=error,
+            )
             continue
 
     if download_rapport is None:
@@ -1076,8 +1082,12 @@ async def marker_dokument(
                 force=True,
                 timeout=3_000,
             )
-        except Exception:
-            pass
+        except PlaywrightTimeoutError as error:
+            logger.debug(
+                "Direkte markering af dokumentcheckbox fik timeout. "
+                "Forsøger checkbox-wrapper som fallback.",
+                exc_info=error,
+            )
 
         if not await checkbox.is_checked():
             try:
@@ -1085,8 +1095,12 @@ async def marker_dokument(
                     force=True,
                     timeout=3_000,
                 )
-            except Exception:
-                pass
+            except PlaywrightTimeoutError as error:
+                logger.debug(
+                    "Klik på checkbox-wrapper fik timeout. "
+                    "Forsøger JavaScript-klik som fallback.",
+                    exc_info=error,
+                )
 
         if not await checkbox.is_checked():
             await checkbox.evaluate("element => element.click()")
@@ -1196,7 +1210,7 @@ def _normalize_document_name(
     if remove_extension:
         for extension in (".pdf", ".docx", ".doc", ".xlsx", ".xls"):
             if normalized.endswith(extension):
-                normalized = normalized[: -len(extension)].rstrip()
+                normalized = normalized.removesuffix(extension).rstrip()
                 break
     return normalized
 
@@ -1215,7 +1229,7 @@ def _extract_easy_object(
         return {}
 
     if not isinstance(easy, dict):
-        raise RuntimeError(
+        raise TypeError(
             f"Feltet easy er ikke en dictionary. Modtog: {type(easy).__name__}."
         )
 
@@ -1485,7 +1499,7 @@ def _normalize_last_editing(*, last_editing: str) -> str:
     if not value:
         raise ValueError("last_editing må ikke være tom.")
     try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        datetime.fromisoformat(value)
     except ValueError as error:
         raise ValueError("last_editing skal være et ISO-datoformat.") from error
     return value
