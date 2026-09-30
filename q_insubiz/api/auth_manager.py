@@ -107,7 +107,8 @@ class InsubizAuthManager:
             self._playwright = await async_playwright().start()
 
             self._browser = await self._playwright.chromium.launch(
-                headless=self._headless,
+            headless=self._headless,
+            channel="chromium",
             )
 
             self._context = await self._browser.new_context(
