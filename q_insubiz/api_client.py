@@ -40,6 +40,15 @@ from q_insubiz.api.request_context_auth_manager import (
     RequestContextAuthManager,
 )
 
+from playwright.async_api import (
+    BrowserContext,
+    Page,
+)
+
+from q_insubiz.api.existing_context_auth_manager import (
+    ExistingContextAuthManager,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -336,6 +345,45 @@ def create_api_client(
         auth_manager=auth_manager,
     )
 
+def create_api_client_from_context(
+    *,
+    context: BrowserContext,
+    page: Page,
+) -> InsubizApiClient:
+    """Opretter en API-klient fra en eksisterende browsercontext.
+
+    API-klienten genbruger cookies fra den eksisterende
+    Playwright-session og starter ikke en ny browser.
+    """
+    if context is None:
+        raise ValueError(
+            "context må ikke være None."
+        )
+
+    if page is None:
+        raise ValueError(
+            "page må ikke være None."
+        )
+
+    if page.is_closed():
+        raise RuntimeError(
+            "API-klienten kunne ikke oprettes, fordi "
+            "Playwright-siden er lukket."
+        )
+
+    auth_manager = ExistingContextAuthManager(
+        context=context,
+        page=page,
+    )
+
+    logger.info(
+        "Opretter Insubiz API-klient fra eksisterende "
+        "Playwright-browsercontext."
+    )
+
+    return InsubizApiClient(
+        auth_manager=auth_manager,
+    )
 
 def create_api_client_from_request_context(
     *,
@@ -366,5 +414,5 @@ __all__ = [
     "DEFAULT_DEBUG",
     "DEFAULT_HEADLESS",
     "create_api_client",
-    "create_api_client_from_request_context",
+    "create_api_client_from_context",
 ]
