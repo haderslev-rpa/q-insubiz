@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from playwright.async_api import (
+    APIRequestContext,
     Locator,
     Page,
 )
@@ -32,11 +33,11 @@ UI_WAIT_MS = 1_500
 SKADER_LISTE_ENDPOINT = "/ImportExport/ExportIncidents"
 GET_INCIDENT_BY_ID_ENDPOINT = "/IncidentHandling/GetIncidentById"
 UPDATE_INCIDENT_FIELDS_ENDPOINT = "/IncidentHandling/UpdateIncidentFields"
+CREATE_COMMENT_ENDPOINT = "/IncidentHandling/CreateComment"
 VALIDATE_INCIDENT_FOR_SEND_TO_EASY_ENDPOINT = (
     "/IncidentHandling/ValidateIncidentForSendToEasy"
 )
 SEND_INCIDENT_TO_EASY_ENDPOINT = "/IncidentHandling/SendIncidentToEasy"
-
 
 EASY_STATUS_GODKENDT = "Godkendt hos EASY"
 EASY_STATUS_AFSENDT_AFVENTER = "Afsendt til EASY, afventer"
@@ -111,7 +112,9 @@ async def SKADER_LISTE(
         )
     except Exception as error:
         logger.exception("Skadelisten kunne ikke hentes fra Insubiz.")
-        raise RuntimeError("Skadelisten kunne ikke hentes fra Insubiz.") from error
+        raise RuntimeError(
+            "Skadelisten kunne ikke hentes fra Insubiz."
+        ) from error
 
     rows = parse_excel_response(
         content=content,
@@ -139,12 +142,14 @@ async def hent_skade_via_id(
             normalized_skade_id,
         )
         raise RuntimeError(
-            f"Skaden kunne ikke hentes fra Insubiz. Skade-id: {normalized_skade_id}."
+            f"Skaden kunne ikke hentes fra Insubiz. "
+            f"Skade-id: {normalized_skade_id}."
         ) from error
 
     if not isinstance(response, dict):
         raise TypeError(
-            f"GetIncidentById returnerede et uventet format: {type(response).__name__}."
+            "GetIncidentById returnerede et uventet format: "
+            f"{type(response).__name__}."
         )
     if not response:
         raise RuntimeError(
@@ -153,6 +158,138 @@ async def hent_skade_via_id(
         )
     return response
 
+
+# Start: opret_kommentar_paa_skade
+async def opret_kommentar_paa_skade(
+    request_context: APIRequestContext,
+    skade_id: int | str,
+    *,
+    titel: str,
+    kommentartekst: str,
+) -> dict[str, Any]:
+    """Opret en kommentar med titel og tekst på en Insubiz-skade.
+
+    request_context skal allerede være autentificeret.
+    Almindelig tekst omdannes til sikker HTML, fordi det viste
+    CreateComment-request bruger isHtml=true.
+
+    Returnerer Insubiz' JSON-svar, herunder kommentarens id.
+    """
+    import html
+    import json
+
+    if request_context is None:
+        raise TypeError("request_context må ikke være None.")
+
+    normalized_skade_id = _normalize_skade_id(skade_id)
+    normalized_titel = _normalize_required_text(
+        name="titel",
+        value=titel,
+    )
+    normalized_tekst = _normalize_required_text(
+        name="kommentartekst",
+        value=kommentartekst,
+    )
+
+    # Bevar linjeskift, men fortolk ikke brugerens tekst som HTML.
+    html_tekst = "<p>" + html.escape(normalized_tekst).replace(
+        "\n", "<br>"
+    ) + "</p>"
+
+    payload = {
+        "title": normalized_titel,
+        "body": html_tekst,
+        "isHtml": True,
+    }
+
+    logger.info(
+        "Opretter kommentar på skade-id %s.",
+        normalized_skade_id,
+    )
+
+    try:
+        response = await request_context.post(
+            f"https://start.insubiz.dk{CREATE_COMMENT_ENDPOINT}",
+            params={"IncidentId": normalized_skade_id},
+            data=json.dumps(payload, ensure_ascii=False),
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            timeout=30_000,
+        )
+    except Exception as error:
+        logger.exception(
+            "CreateComment-kaldet fejlede. Skade-id: %s.",
+            normalized_skade_id,
+        )
+        raise RuntimeError(
+            "Kommentaren kunne ikke oprettes. "
+            f"Skade-id: {normalized_skade_id}."
+        ) from error
+
+    if not response.ok:
+        raise RuntimeError(
+            "CreateComment returnerede en HTTP-fejl. "
+            f"Skade-id: {normalized_skade_id}. "
+            f"HTTP-status: {response.status}."
+        )
+
+    try:
+        kommentar = await response.json()
+    except Exception as error:
+        raise RuntimeError(
+            "CreateComment returnerede ikke gyldig JSON. "
+            f"Skade-id: {normalized_skade_id}."
+        ) from error
+
+    if not isinstance(kommentar, dict):
+        raise TypeError(
+            "CreateComment returnerede ikke et JSON-objekt. "
+            f"Skade-id: {normalized_skade_id}."
+        )
+
+    skade = kommentar.get("ibObject")
+    if (
+        not isinstance(skade, dict)
+        or skade.get("id") != normalized_skade_id
+    ):
+        raise RuntimeError(
+            "CreateComment-svaret matcher ikke det ønskede skade-id. "
+            f"Skade-id: {normalized_skade_id}."
+        )
+
+    kommentar_id = kommentar.get("id")
+    if (
+        isinstance(kommentar_id, bool)
+        or not isinstance(kommentar_id, int)
+        or kommentar_id <= 0
+    ):
+        raise RuntimeError(
+            "CreateComment-svaret mangler et gyldigt kommentar-id. "
+            f"Skade-id: {normalized_skade_id}."
+        )
+
+    if kommentar.get("title") != normalized_titel:
+        raise RuntimeError(
+            "Kommentaren blev oprettet, men svarets titel matcher ikke. "
+            f"Kommentar-id: {kommentar_id}."
+        )
+
+    svar_body = kommentar.get("body")
+    if not isinstance(svar_body, str) or not svar_body.strip():
+        raise RuntimeError(
+            "Kommentaren blev oprettet, men svaret mangler tekst. "
+            f"Kommentar-id: {kommentar_id}."
+        )
+
+    logger.info(
+        "Kommentar %s oprettet på skade-id %s med titel og tekst.",
+        kommentar_id,
+        normalized_skade_id,
+    )
+    return kommentar
+# Slut: opret_kommentar_paa_skade
 
 async def opdater_skade_status(
     api_client: InsubizApiClient,
@@ -163,7 +300,9 @@ async def opdater_skade_status(
 ) -> Any:
     """Opdaterer skadestatus med en kendt lastEditing."""
     normalized_skade_id = _normalize_skade_id(skade_id)
-    normalized_last_editing = _normalize_last_editing(last_editing=last_editing)
+    normalized_last_editing = _normalize_last_editing(
+        last_editing=last_editing
+    )
     normalized_status = _normalize_skade_status(status=status)
     payload = {
         "recordId": normalized_skade_id,
@@ -182,7 +321,8 @@ async def opdater_skade_status(
             int(normalized_status),
         )
         raise RuntimeError(
-            f"Skadestatus kunne ikke opdateres. Skade-id: {normalized_skade_id}."
+            "Skadestatus kunne ikke opdateres. "
+            f"Skade-id: {normalized_skade_id}."
         ) from error
 
 
@@ -215,7 +355,6 @@ async def send_skade_til_easy(
     """Validerer skaden og sender den til EASY, hvis det er nødvendigt.
 
     Flowet følger Insubiz-brugerfladen:
-
     1. Hent skaden og kontrollér EASY-status.
     2. Kald ValidateIncidentForSendToEasy.
     3. Kald SendIncidentToEasy, hvis valideringen accepteres.
@@ -225,7 +364,6 @@ async def send_skade_til_easy(
     efterfølgende kontrol viser en sendt EASY-status eller en reference.
     """
     normalized_skade_id = _normalize_skade_id(skade_id)
-
     incident_foer = await hent_skade_via_id(
         api_client=api_client,
         skade_id=normalized_skade_id,
@@ -236,7 +374,6 @@ async def send_skade_til_easy(
     easy_reference_foer = _extract_easy_reference(
         incident=incident_foer,
     )
-
     logger.info(
         "Kontrollerer EASY-status før validering og afsendelse. "
         "Skade-id: %s. EASY-status: %r. "
@@ -245,7 +382,6 @@ async def send_skade_til_easy(
         easy_status_foer,
         bool(easy_reference_foer),
     )
-
     if _er_allerede_sendt_til_easy(
         easy_status=easy_status_foer,
     ):
@@ -266,19 +402,15 @@ async def send_skade_til_easy(
         api_client=api_client,
         skade_id=normalized_skade_id,
     )
-
     logger.info(
         "EASY-valideringen blev accepteret. Skade-id: %s. Response: %r.",
         normalized_skade_id,
         validation_response,
     )
-
     try:
         response = await api_client.get(
             endpoint=SEND_INCIDENT_TO_EASY_ENDPOINT,
-            params={
-                "id": normalized_skade_id,
-            },
+            params={"id": normalized_skade_id},
         )
     except Exception as send_error:  # noqa: BLE001
         return await _haandter_easy_sendefejl(
@@ -290,14 +422,11 @@ async def send_skade_til_easy(
             send_error=send_error,
         )
 
-    normalized_response = _normalize_send_response(
-        response=response,
-    )
+    normalized_response = _normalize_send_response(response=response)
     _validate_send_response(
         response=normalized_response,
         skade_id=normalized_skade_id,
     )
-
     incident_efter = await hent_skade_via_id(
         api_client=api_client,
         skade_id=normalized_skade_id,
@@ -308,11 +437,8 @@ async def send_skade_til_easy(
     easy_reference_efter = _extract_easy_reference(
         incident=incident_efter,
     )
-
     if not (
-        _er_allerede_sendt_til_easy(
-            easy_status=easy_status_efter,
-        )
+        _er_allerede_sendt_til_easy(easy_status=easy_status_efter)
         or bool(easy_reference_efter)
     ):
         raise RuntimeError(
@@ -324,7 +450,6 @@ async def send_skade_til_easy(
             f"EASY-status efter: {easy_status_efter!r}. "
             f"EASY-reference efter: {easy_reference_efter!r}."
         )
-
     return SendSkadeTilEasyResultat(
         skade_id=normalized_skade_id,
         easy_status_foer=easy_status_foer,
@@ -345,13 +470,10 @@ async def valider_skade_foer_easy(
 ) -> dict[str, Any]:
     """Kalder Insubiz-valideringen før EASY-afsendelse."""
     normalized_skade_id = _normalize_skade_id(skade_id)
-
     try:
         response = await api_client.get(
             endpoint=VALIDATE_INCIDENT_FOR_SEND_TO_EASY_ENDPOINT,
-            params={
-                "id": normalized_skade_id,
-            },
+            params={"id": normalized_skade_id},
         )
     except Exception as error:
         logger.exception(
@@ -391,7 +513,6 @@ async def _haandter_easy_sendefejl(
         easy_status_foer,
         exc_info=send_error,
     )
-
     try:
         incident_efter = await hent_skade_via_id(
             api_client=api_client,
@@ -414,7 +535,6 @@ async def _haandter_easy_sendefejl(
     easy_reference_efter = _extract_easy_reference(
         incident=incident_efter,
     )
-
     logger.info(
         "EASY-efterkontrol udført. Skade-id: %s. "
         "EASY-status før: %r. EASY-status efter: %r. "
@@ -424,7 +544,6 @@ async def _haandter_easy_sendefejl(
         easy_status_efter,
         bool(easy_reference_efter),
     )
-
     if _er_allerede_sendt_til_easy(
         easy_status=easy_status_efter,
     ) or bool(easy_reference_efter):
@@ -443,13 +562,15 @@ async def _haandter_easy_sendefejl(
                 "statusCode": None,
                 "value": True,
                 "text": (
-                    "Efterkontrollen bekræftede EASY-afsendelsen efter en serverfejl."
+                    "Efterkontrollen bekræftede EASY-afsendelsen "
+                    "efter en serverfejl."
                 ),
                 "validationResponse": validation_response,
-                "sendError": (f"{type(send_error).__name__}: {send_error}"),
+                "sendError": (
+                    f"{type(send_error).__name__}: {send_error}"
+                ),
             },
         )
-
     raise RuntimeError(
         "Skaden kunne ikke sendes til EASY, og efterkontrollen "
         "viser ingen sendt status eller EASY-reference. "
@@ -468,23 +589,23 @@ async def klik_paa_skade(page: Page) -> None:
     """Åbner Skade med kontrollerede fallbacks."""
     if page.is_closed():
         raise RuntimeError("Skade kunne ikke åbnes, fordi siden er lukket.")
-
-    skade_link = page.locator(SkadeSelectors.SKADE_MENU).filter(has_text="Skade").first
-
+    skade_link = (
+        page.locator(SkadeSelectors.SKADE_MENU)
+        .filter(has_text="Skade")
+        .first
+    )
     if await skade_link.count() == 0:
         skade_link = page.get_by_role(
             "link",
             name="Skade",
             exact=True,
         ).first
-
     await skade_link.wait_for(state="visible", timeout=TIMEOUT_MS)
     await skade_link.scroll_into_view_if_needed()
     try:
         await skade_link.click(timeout=5_000)
     except PlaywrightTimeoutError:
         await skade_link.click(force=True, timeout=5_000)
-
     await page.wait_for_timeout(UI_WAIT_MS)
     if "/incident/" not in page.url:
         await skade_link.evaluate("element => element.click()")
@@ -496,7 +617,6 @@ async def klik_paa_skade(page: Page) -> None:
             wait_until="domcontentloaded",
             timeout=30_000,
         )
-
     await page.wait_for_url("**/incident/**", timeout=30_000)
     await page.wait_for_load_state("domcontentloaded")
     await page.wait_for_timeout(UI_WAIT_MS)
@@ -507,17 +627,17 @@ async def opret_dokument_fra_skabelon(page: Page) -> Locator:
     button = page.locator(SkadeSelectors.aabn_dokumentdialog).first
     await button.wait_for(state="visible", timeout=TIMEOUT_MS)
     if not await button.is_enabled():
-        raise RuntimeError("Knappen Opret dokument fra skabelon er ikke aktiveret.")
+        raise RuntimeError(
+            "Knappen Opret dokument fra skabelon er ikke aktiveret."
+        )
     await button.scroll_into_view_if_needed()
     await button.click()
-
     title = page.locator(SkadeSelectors.DOKUMENT_DIALOG_TITEL).last
     await title.wait_for(state="visible", timeout=TIMEOUT_MS)
     dialog = title.locator(
         "xpath=ancestor::*[contains(@class, 'v-overlay__content')][1]"
     )
     await dialog.wait_for(state="visible", timeout=TIMEOUT_MS)
-
     dropdown = dialog.locator(SkadeSelectors.SKABELON_DROPDOWN).first
     await dropdown.wait_for(state="visible", timeout=TIMEOUT_MS)
     await page.wait_for_timeout(UI_WAIT_MS)
@@ -546,18 +666,20 @@ async def vaelg_dokumentskabelon(
     except PlaywrightTimeoutError:
         await dropdown.focus()
         await dropdown.press("ArrowDown")
-
     await page.wait_for_timeout(UI_WAIT_MS)
     exact_name = re.compile(
         rf"^\s*{re.escape(normalized_name)}\s*$",
         re.IGNORECASE,
     )
-    option = page.locator(SkadeSelectors.SKABELON_VALG).filter(has_text=exact_name).last
+    option = (
+        page.locator(SkadeSelectors.SKABELON_VALG)
+        .filter(has_text=exact_name)
+        .last
+    )
     await option.wait_for(state="visible", timeout=TIMEOUT_MS)
     await option.scroll_into_view_if_needed()
     await option.click()
     await page.wait_for_timeout(UI_WAIT_MS)
-
     selection = dialog.locator(SkadeSelectors.VALGT_SKABELON).first
     await selection.wait_for(state="visible", timeout=TIMEOUT_MS)
     selected_text = (await selection.inner_text()).strip()
@@ -586,9 +708,10 @@ async def gem_dokument_fra_skabelon(
 
 async def download_easy_rapport_og_gem_i_mappe(page: Page) -> None:
     """Opretter Easy-rapport og gemmer den i mappen."""
-    tre_prik_knapper = page.locator(SkadeSelectors.TRE_PRIK_MENU_KNAP)
+    tre_prik_knapper = page.locator(
+        SkadeSelectors.TRE_PRIK_MENU_KNAP
+    )
     download_rapport: Locator | None = None
-
     for index in range(await tre_prik_knapper.count() - 1, -1, -1):
         button = tre_prik_knapper.nth(index)
         menu_id = await button.get_attribute("aria-controls")
@@ -621,8 +744,9 @@ async def download_easy_rapport_og_gem_i_mappe(page: Page) -> None:
             continue
 
     if download_rapport is None:
-        raise RuntimeError("Menupunktet Download rapport blev ikke fundet.")
-
+        raise RuntimeError(
+            "Menupunktet Download rapport blev ikke fundet."
+        )
     await download_rapport.click()
     await page.wait_for_timeout(UI_WAIT_MS)
     dialog = (
@@ -631,14 +755,18 @@ async def download_easy_rapport_og_gem_i_mappe(page: Page) -> None:
         .last
     )
     await dialog.wait_for(state="visible", timeout=TIMEOUT_MS)
-
-    rapport_flise = dialog.locator(SkadeSelectors.EASY_RAPPORT_FLIS).last
+    rapport_flise = dialog.locator(
+        SkadeSelectors.EASY_RAPPORT_FLIS
+    ).last
     await rapport_flise.wait_for(state="visible", timeout=TIMEOUT_MS)
-    checkbox = rapport_flise.locator(SkadeSelectors.GEM_I_MAPPE_CHECKBOX).first
+    checkbox = rapport_flise.locator(
+        SkadeSelectors.GEM_I_MAPPE_CHECKBOX
+    ).first
     await checkbox.wait_for(state="attached", timeout=TIMEOUT_MS)
-
     if not await checkbox.is_checked():
-        await rapport_flise.locator(SkadeSelectors.CHECKBOX_WRAPPER).first.click(
+        await rapport_flise.locator(
+            SkadeSelectors.CHECKBOX_WRAPPER
+        ).first.click(
             position={"x": 20, "y": 20},
             force=True,
         )
@@ -647,7 +775,6 @@ async def download_easy_rapport_og_gem_i_mappe(page: Page) -> None:
             arg=await checkbox.element_handle(),
             timeout=TIMEOUT_MS,
         )
-
     await page.wait_for_timeout(UI_WAIT_MS)
     await rapport_flise.click(
         position={"x": 220, "y": 35},
@@ -666,8 +793,7 @@ async def send_digital_post(
     bilag_navn: str,
     test: bool = False,
 ) -> dict[str, Any]:
-    """
-    Udfylder digital post, vedhæfter dokumenterne og sender.
+    """Udfylder digital post, vedhæfter dokumenterne og sender.
 
     Når test er True, udfyldes og kontrolleres formularen,
     men Send-knappen bliver ikke klikket. Standardværdien
@@ -675,7 +801,6 @@ async def send_digital_post(
     """
     if not isinstance(test, bool):
         raise TypeError("test skal være True eller False.")
-
     values = {
         "cpr_nummer": _normalize_required_text(
             name="cpr_nummer",
@@ -698,9 +823,7 @@ async def send_digital_post(
             value=bilag_navn,
         ),
     }
-
     dialog = await _aabn_send_digital_post_dialog(page=page)
-
     await _fill_and_verify(
         field=dialog.locator(SkadeSelectors.CPR_INPUT).first,
         value=values["cpr_nummer"],
@@ -716,13 +839,14 @@ async def send_digital_post(
         dialog=dialog,
         forsendelsestype=values["forsendelsestype"],
     )
-
-    hoved_rows, faktisk_hoveddokument = await _aabn_og_vedhaeft_dokument(
-        page=page,
-        send_dialog=dialog,
-        knap_selector=SkadeSelectors.HOVEDDOKUMENT_KNAP,
-        dokument_navn=values["hoveddokument"],
-        dokumenttype="hoveddokument",
+    hoved_rows, faktisk_hoveddokument = (
+        await _aabn_og_vedhaeft_dokument(
+            page=page,
+            send_dialog=dialog,
+            knap_selector=SkadeSelectors.HOVEDDOKUMENT_KNAP,
+            dokument_navn=values["hoveddokument"],
+            dokumenttype="hoveddokument",
+        )
     )
     bilag_rows, faktisk_bilag = await _aabn_og_vedhaeft_dokument(
         page=page,
@@ -731,12 +855,11 @@ async def send_digital_post(
         dokument_navn=values["bilag"],
         dokumenttype="bilag",
     )
-
     sendt = False
-
     if test:
         logger.info(
-            "Digital post er udfyldt i testtilstand. Send-knappen blev ikke klikket."
+            "Digital post er udfyldt i testtilstand. "
+            "Send-knappen blev ikke klikket."
         )
     else:
         await _klik_send_digital_post(
@@ -744,7 +867,6 @@ async def send_digital_post(
             dialog=dialog,
         )
         sendt = True
-
     return {
         "dokumenttitel": values["dokumenttitel"],
         "forsendelsestype": values["forsendelsestype"],
@@ -767,8 +889,9 @@ async def _aabn_send_digital_post_dialog(*, page: Page) -> Locator:
         await button.click(timeout=5_000)
     except PlaywrightTimeoutError:
         await button.click(force=True, timeout=5_000)
-
-    title = page.locator(SkadeSelectors.SEND_DIGITAL_POST_TITEL).last
+    title = page.locator(
+        SkadeSelectors.SEND_DIGITAL_POST_TITEL
+    ).last
     await title.wait_for(state="visible", timeout=TIMEOUT_MS)
     dialog = title.locator(
         "xpath=ancestor::*[contains(@class, 'v-overlay__content')][1]"
@@ -785,32 +908,23 @@ async def _vaelg_forsendelsestype(
     forsendelsestype: str,
 ) -> None:
     """Åbner dokumenttype-dropdownen og vælger værdien."""
-    wrapper = dialog.locator(SkadeSelectors.DOKUMENTTYPE_FIELD).first
-    input_field = dialog.locator(SkadeSelectors.DOKUMENTTYPE_INPUT).first
-
-    await wrapper.wait_for(
-        state="visible",
-        timeout=TIMEOUT_MS,
-    )
-    await input_field.wait_for(
-        state="visible",
-        timeout=TIMEOUT_MS,
-    )
-
+    wrapper = dialog.locator(
+        SkadeSelectors.DOKUMENTTYPE_FIELD
+    ).first
+    input_field = dialog.locator(
+        SkadeSelectors.DOKUMENTTYPE_INPUT
+    ).first
+    await wrapper.wait_for(state="visible", timeout=TIMEOUT_MS)
+    await input_field.wait_for(state="visible", timeout=TIMEOUT_MS)
     menu_id = await input_field.get_attribute("aria-controls")
     await wrapper.click(force=True)
     await page.wait_for_timeout(UI_WAIT_MS)
-
     menu = (
         page.locator(f"#{menu_id}")
         if menu_id
         else page.locator(SkadeSelectors.DOKUMENTTYPE_MENU).last
     )
-    await menu.wait_for(
-        state="visible",
-        timeout=TIMEOUT_MS,
-    )
-
+    await menu.wait_for(state="visible", timeout=TIMEOUT_MS)
     option = (
         menu.locator(SkadeSelectors.DOKUMENTTYPE_MENU_VALG)
         .filter(
@@ -821,15 +935,10 @@ async def _vaelg_forsendelsestype(
         )
         .first
     )
-    await option.wait_for(
-        state="visible",
-        timeout=TIMEOUT_MS,
-    )
+    await option.wait_for(state="visible", timeout=TIMEOUT_MS)
     await option.click()
     await page.wait_for_timeout(UI_WAIT_MS)
-
     selected_text = (await input_field.input_value()).strip()
-
     if selected_text.casefold() != forsendelsestype.casefold():
         raise RuntimeError(
             "Dokumenttypen blev ikke valgt korrekt. "
@@ -848,94 +957,74 @@ async def _aabn_og_vedhaeft_dokument(
 ) -> tuple[list[str], str]:
     """Vælger, vedhæfter og kontrollerer et dokument."""
     button = send_dialog.locator(knap_selector).first
-    await button.wait_for(
-        state="visible",
-        timeout=TIMEOUT_MS,
-    )
+    await button.wait_for(state="visible", timeout=TIMEOUT_MS)
     await button.scroll_into_view_if_needed()
-
     try:
         await button.click(timeout=5_000)
     except PlaywrightTimeoutError:
         await button.click(force=True, timeout=5_000)
-
     picker = page.locator(SkadeSelectors.DOKUMENTVAEGER).last
-    await picker.wait_for(
-        state="visible",
-        timeout=TIMEOUT_MS,
-    )
+    await picker.wait_for(state="visible", timeout=TIMEOUT_MS)
     await page.wait_for_timeout(UI_WAIT_MS)
-
-    rows = await hent_dokumentnavne(
-        dokumentvaelger=picker,
-    )
+    rows = await hent_dokumentnavne(dokumentvaelger=picker)
     faktisk_dokumentnavn = await marker_dokument(
         dokumentvaelger=picker,
         dokument_navn=dokument_navn,
     )
-
     picker_dialog = picker.locator(
         "xpath=ancestor::*[contains(@class, 'v-overlay__content')][1]"
     )
-    attach_button = picker_dialog.locator(SkadeSelectors.VEDHAEFT_KNAP).first
-
+    attach_button = picker_dialog.locator(
+        SkadeSelectors.VEDHAEFT_KNAP
+    ).first
     if await attach_button.count() == 0:
         attach_button = picker_dialog.get_by_role(
             "button",
             name="Vedhæft",
             exact=True,
         ).first
-
-    await attach_button.wait_for(
-        state="visible",
-        timeout=TIMEOUT_MS,
-    )
+    await attach_button.wait_for(state="visible", timeout=TIMEOUT_MS)
     await attach_button.scroll_into_view_if_needed()
-
     if not await attach_button.is_enabled():
-        raise RuntimeError(f"Vedhæft for {dokumenttype} er ikke aktiveret.")
-
+        raise RuntimeError(
+            f"Vedhæft for {dokumenttype} er ikke aktiveret."
+        )
     try:
         await attach_button.click(timeout=3_000)
     except PlaywrightTimeoutError:
         try:
-            await attach_button.click(
-                force=True,
-                timeout=3_000,
-            )
+            await attach_button.click(force=True, timeout=3_000)
         except PlaywrightTimeoutError:
-            await attach_button.evaluate("element => element.click()")
-
+            await attach_button.evaluate(
+                "element => element.click()"
+            )
     try:
-        await picker_dialog.wait_for(
-            state="hidden",
-            timeout=5_000,
-        )
+        await picker_dialog.wait_for(state="hidden", timeout=5_000)
     except PlaywrightTimeoutError:
         if await attach_button.is_visible():
-            await attach_button.evaluate("element => element.click()")
+            await attach_button.evaluate(
+                "element => element.click()"
+            )
         await picker_dialog.wait_for(
             state="hidden",
             timeout=TIMEOUT_MS,
         )
-
-    await page.locator(SkadeSelectors.SEND_DIGITAL_POST_TITEL).last.wait_for(
+    await page.locator(
+        SkadeSelectors.SEND_DIGITAL_POST_TITEL
+    ).last.wait_for(
         state="visible",
         timeout=TIMEOUT_MS,
     )
     await page.wait_for_timeout(UI_WAIT_MS)
-
     vedhaeftet_filnavn = await _kontroller_vedhaeftet_chip(
         send_dialog=send_dialog,
         forventet_filnavn=faktisk_dokumentnavn,
     )
-
     logger.info(
         "%s blev vedhæftet og bekræftet: %s.",
         dokumenttype.capitalize(),
         vedhaeftet_filnavn,
     )
-
     return rows, vedhaeftet_filnavn
 
 
@@ -949,30 +1038,22 @@ async def _kontroller_vedhaeftet_chip(
         forventet_filnavn,
         remove_extension=True,
     )
-    chips = send_dialog.locator(SkadeSelectors.DOKUMENTCHIP_TEKST)
-
-    await chips.first.wait_for(
-        state="visible",
-        timeout=TIMEOUT_MS,
+    chips = send_dialog.locator(
+        SkadeSelectors.DOKUMENTCHIP_TEKST
     )
-
+    await chips.first.wait_for(state="visible", timeout=TIMEOUT_MS)
     fundne_filnavne: list[str] = []
-
     for index in range(await chips.count()):
         chip_text = (await chips.nth(index).inner_text()).strip()
-
         if not chip_text:
             continue
-
         fundne_filnavne.append(chip_text)
         faktisk_normaliseret = _normalize_document_name(
             chip_text,
             remove_extension=True,
         )
-
         if faktisk_normaliseret == forventet_normaliseret:
             return chip_text
-
     raise RuntimeError(
         "Det korrekte dokument blev ikke vist som chip "
         "efter Vedhæft. "
@@ -988,30 +1069,19 @@ async def _klik_send_digital_post(
 ) -> None:
     """Klikker på Send og venter på, at dialogen lukker."""
     send_button = dialog.locator(SkadeSelectors.SEND_KNAP).last
-
     if await send_button.count() == 0:
         send_button = dialog.get_by_role(
             "button",
             name="Send",
             exact=True,
         ).last
-
-    await send_button.wait_for(
-        state="visible",
-        timeout=TIMEOUT_MS,
-    )
+    await send_button.wait_for(state="visible", timeout=TIMEOUT_MS)
     await send_button.scroll_into_view_if_needed()
-
     if not await send_button.is_enabled():
         raise RuntimeError("Knappen Send er ikke aktiveret.")
-
     await send_button.click()
-    await dialog.wait_for(
-        state="hidden",
-        timeout=30_000,
-    )
+    await dialog.wait_for(state="hidden", timeout=30_000)
     await page.wait_for_timeout(UI_WAIT_MS)
-
     logger.info("Digital post blev sendt.")
 
 
@@ -1020,7 +1090,9 @@ async def hent_dokumentnavne(
     dokumentvaelger: Locator,
 ) -> list[str]:
     """Returnerer alle filnavne i dokumentvælgeren."""
-    documents = dokumentvaelger.locator(SkadeSelectors.DOKUMENTNAVN)
+    documents = dokumentvaelger.locator(
+        SkadeSelectors.DOKUMENTNAVN
+    )
     result: list[str] = []
     for index in range(await documents.count()):
         document = documents.nth(index)
@@ -1041,10 +1113,14 @@ async def marker_dokument(
         name="dokument_navn",
         value=dokument_navn,
     )
-    documents = dokumentvaelger.locator(SkadeSelectors.DOKUMENTNAVN)
-    await documents.first.wait_for(state="visible", timeout=TIMEOUT_MS)
+    documents = dokumentvaelger.locator(
+        SkadeSelectors.DOKUMENTNAVN
+    )
+    await documents.first.wait_for(
+        state="visible",
+        timeout=TIMEOUT_MS,
+    )
     available_documents: list[tuple[Locator, str]] = []
-
     for index in range(await documents.count()):
         document = documents.nth(index)
         if not await document.is_visible():
@@ -1053,7 +1129,6 @@ async def marker_dokument(
         actual_name = (title or await document.inner_text()).strip()
         if actual_name:
             available_documents.append((document, actual_name))
-
     selected_document = _find_document_match(
         documents=available_documents,
         requested_name=normalized_document_name,
@@ -1064,62 +1139,51 @@ async def marker_dokument(
             "Tilgængelige dokumenter: "
             f"{[name for _, name in available_documents]!r}."
         )
-
     filename, actual_name = selected_document
     row = filename.locator("xpath=ancestor::tr[1]")
-    checkbox = row.locator(SkadeSelectors.DOKUMENT_CHECKBOX).first
+    checkbox = row.locator(
+        SkadeSelectors.DOKUMENT_CHECKBOX
+    ).first
     await checkbox.wait_for(state="attached", timeout=TIMEOUT_MS)
-
     if not await checkbox.is_checked():
-        wrapper = row.locator(SkadeSelectors.CHECKBOX_WRAPPER).first
+        wrapper = row.locator(
+            SkadeSelectors.CHECKBOX_WRAPPER
+        ).first
         await wrapper.wait_for(
             state="visible",
             timeout=TIMEOUT_MS,
         )
-
         try:
-            await checkbox.check(
-                force=True,
-                timeout=3_000,
-            )
+            await checkbox.check(force=True, timeout=3_000)
         except PlaywrightTimeoutError as error:
             logger.debug(
                 "Direkte markering af dokumentcheckbox fik timeout. "
                 "Forsøger checkbox-wrapper som fallback.",
                 exc_info=error,
             )
-
         if not await checkbox.is_checked():
             try:
-                await wrapper.click(
-                    force=True,
-                    timeout=3_000,
-                )
+                await wrapper.click(force=True, timeout=3_000)
             except PlaywrightTimeoutError as error:
                 logger.debug(
                     "Klik på checkbox-wrapper fik timeout. "
                     "Forsøger JavaScript-klik som fallback.",
                     exc_info=error,
                 )
-
         if not await checkbox.is_checked():
             await checkbox.evaluate("element => element.click()")
-
         try:
-            await page_wait_for_checkbox(
-                checkbox=checkbox,
-            )
+            await page_wait_for_checkbox(checkbox=checkbox)
         except PlaywrightTimeoutError as error:
             raise RuntimeError(
-                f"Dokumentets checkbox blev ikke markeret. Dokument: {actual_name!r}."
+                "Dokumentets checkbox blev ikke markeret. "
+                f"Dokument: {actual_name!r}."
             ) from error
-
     if not await checkbox.is_checked():
         raise RuntimeError(
             "Dokumentet blev fundet, men checkboxen blev "
             f"ikke markeret. Dokument: {actual_name!r}."
         )
-
     logger.info(
         "Dokument markeret: %s. Input: %s.",
         actual_name,
@@ -1132,7 +1196,9 @@ async def page_wait_for_checkbox(*, checkbox: Locator) -> None:
     """Venter på, at dokumentcheckboxen bliver markeret."""
     handle = await checkbox.element_handle()
     if handle is None:
-        raise RuntimeError("Checkbox-elementet kunne ikke aflæses.")
+        raise RuntimeError(
+            "Checkbox-elementet kunne ikke aflæses."
+        )
     await checkbox.page.wait_for_function(
         "element => element.checked === true",
         arg=handle,
@@ -1149,7 +1215,9 @@ async def _fill_and_verify(
     await field.wait_for(state="visible", timeout=TIMEOUT_MS)
     await field.fill(value)
     if (await field.input_value()).strip() != value:
-        raise RuntimeError(f"{field_name} blev ikke indsat korrekt.")
+        raise RuntimeError(
+            f"{field_name} blev ikke indsat korrekt."
+        )
 
 
 def _find_document_match(
@@ -1168,7 +1236,6 @@ def _find_document_match(
     exact_full: list[tuple[Locator, str]] = []
     exact_stem: list[tuple[Locator, str]] = []
     prefixes: list[tuple[Locator, str]] = []
-
     for locator, actual_name in documents:
         actual_full = _normalize_document_name(
             actual_name,
@@ -1184,7 +1251,6 @@ def _find_document_match(
             exact_stem.append((locator, actual_name))
         elif actual_stem.startswith(requested_stem):
             prefixes.append((locator, actual_name))
-
     for matches, match_type in (
         (exact_full, "fuldt filnavn"),
         (exact_stem, "titel uden filendelse"),
@@ -1208,9 +1274,17 @@ def _normalize_document_name(
 ) -> str:
     normalized = " ".join(value.strip().split()).casefold()
     if remove_extension:
-        for extension in (".pdf", ".docx", ".doc", ".xlsx", ".xls"):
+        for extension in (
+            ".pdf",
+            ".docx",
+            ".doc",
+            ".xlsx",
+            ".xls",
+        ):
             if normalized.endswith(extension):
-                normalized = normalized.removesuffix(extension).rstrip()
+                normalized = normalized.removesuffix(
+                    extension
+                ).rstrip()
                 break
     return normalized
 
@@ -1222,17 +1296,14 @@ def _extract_easy_object(
     """Returnerer det indlejrede EASY-objekt, hvis det findes."""
     if not isinstance(incident, dict):
         raise TypeError("incident skal være en dictionary.")
-
     easy = incident.get("easy")
-
     if easy is None:
         return {}
-
     if not isinstance(easy, dict):
         raise TypeError(
-            f"Feltet easy er ikke en dictionary. Modtog: {type(easy).__name__}."
+            "Feltet easy er ikke en dictionary. "
+            f"Modtog: {type(easy).__name__}."
         )
-
     return easy
 
 
@@ -1240,32 +1311,27 @@ def _extract_easy_status_text(
     *,
     incident: dict[str, Any],
 ) -> str:
-    """Henter EASY-status fra topniveau eller det indlejrede easy-objekt."""
+    """Henter EASY-status fra topniveau eller easy-objektet."""
     if not isinstance(incident, dict):
         raise TypeError("incident skal være en dictionary.")
-
-    easy = _extract_easy_object(
-        incident=incident,
-    )
-
+    easy = _extract_easy_object(incident=incident)
     status = (
         incident.get("easyStatus")
         or incident.get("easy.status")
         or easy.get("easyStatus")
         or easy.get("status")
     )
-
     if status is None:
         return ""
-
     if isinstance(status, dict):
         return str(
-            status.get("text") or status.get("name") or status.get("value") or ""
+            status.get("text")
+            or status.get("name")
+            or status.get("value")
+            or ""
         ).strip()
-
     if isinstance(status, str):
         return status.strip()
-
     raise RuntimeError(
         "EASY-status havde et ugyldigt format. "
         f"Modtog: {type(status).__name__}. "
@@ -1277,14 +1343,10 @@ def _extract_easy_reference(
     *,
     incident: dict[str, Any],
 ) -> str:
-    """Henter EASY-reference fra topniveau eller det indlejrede easy-objekt."""
+    """Henter EASY-reference fra topniveau eller easy-objektet."""
     if not isinstance(incident, dict):
         raise TypeError("incident skal være en dictionary.")
-
-    easy = _extract_easy_object(
-        incident=incident,
-    )
-
+    easy = _extract_easy_object(incident=incident)
     easy_reference = str(
         incident.get("easyRef")
         or incident.get("easy.ref")
@@ -1292,10 +1354,8 @@ def _extract_easy_reference(
         or easy.get("ref")
         or ""
     ).strip()
-
     if easy_reference:
         return easy_reference
-
     claim_id = str(
         incident.get("easyClaimId")
         or incident.get("easy.claimId")
@@ -1303,14 +1363,8 @@ def _extract_easy_reference(
         or easy.get("claimId")
         or ""
     ).strip()
-
-    if claim_id in {
-        "",
-        "0",
-        "None",
-    }:
+    if claim_id in {"", "0", "None"}:
         return ""
-
     return claim_id
 
 
@@ -1324,7 +1378,10 @@ def _er_allerede_sendt_til_easy(
     easy_status: str,
 ) -> bool:
     """Kontrollerer om EASY-status forhindrer genafsendelse."""
-    return _normalize_easy_status(easy_status) in EASY_STATUS_ALLEREDE_SENDT
+    return (
+        _normalize_easy_status(easy_status)
+        in EASY_STATUS_ALLEREDE_SENDT
+    )
 
 
 def _normalize_easy_validation_response(
@@ -1334,14 +1391,12 @@ def _normalize_easy_validation_response(
     """Normaliserer de kendte svarformer fra EASY-valideringen."""
     if isinstance(response, dict):
         return response
-
     if isinstance(response, bool):
         return {
             "isValid": response,
             "value": response,
             "text": "OK" if response else "False",
         }
-
     if isinstance(response, list):
         return {
             "isValid": len(response) == 0,
@@ -1349,21 +1404,18 @@ def _normalize_easy_validation_response(
             "value": response,
             "text": "",
         }
-
     if isinstance(response, str):
         return {
             "isValid": None,
             "value": response,
             "text": response.strip(),
         }
-
     if response is None:
         return {
             "isValid": None,
             "value": None,
             "text": "",
         }
-
     return {
         "isValid": None,
         "value": response,
@@ -1378,13 +1430,10 @@ def _validate_easy_validation_response(
 ) -> None:
     """Afviser kun valideringssvar, der eksplicit melder fejl."""
     explicit_validity = response.get("isValid")
-
     if explicit_validity is None:
         explicit_validity = response.get("valid")
-
     if explicit_validity is None:
         explicit_validity = response.get("success")
-
     value = response.get("value")
     errors = (
         response.get("errors")
@@ -1393,22 +1442,22 @@ def _validate_easy_validation_response(
         or []
     )
     text = str(
-        response.get("text") or response.get("message") or response.get("error") or ""
+        response.get("text")
+        or response.get("message")
+        or response.get("error")
+        or ""
     ).strip()
     normalized_text = text.casefold()
-
     if explicit_validity is False or value is False:
         raise RuntimeError(
             "EASY-valideringen afviste skaden. "
             f"Skade-id: {skade_id}. Response: {response!r}."
         )
-
     if errors:
         raise RuntimeError(
             "EASY-valideringen returnerede valideringsfejl. "
             f"Skade-id: {skade_id}. Fejl: {errors!r}."
         )
-
     if any(
         word in normalized_text
         for word in (
@@ -1442,7 +1491,11 @@ def _normalize_send_response(*, response: Any) -> dict[str, Any]:
             "text": response.strip(),
         }
     if response is None:
-        return {"statusCode": 200, "value": None, "text": ""}
+        return {
+            "statusCode": 200,
+            "value": None,
+            "text": "",
+        }
     return {
         "statusCode": None,
         "value": response,
@@ -1459,12 +1512,25 @@ def _validate_send_response(
     value = response.get("value")
     text = str(response.get("text") or "").casefold()
     if status_code is not None and status_code != 200:
-        raise RuntimeError(f"EASY-kald fejlede for skade {skade_id}: {response!r}.")
-    if value is False:
-        raise RuntimeError(f"EASY-kald returnerede False for skade {skade_id}.")
-    if any(word in text for word in ("error", "fejl", "failed", "mislykkedes")):
         raise RuntimeError(
-            f"EASY-kald returnerede fejl for skade {skade_id}: {response!r}."
+            f"EASY-kald fejlede for skade {skade_id}: {response!r}."
+        )
+    if value is False:
+        raise RuntimeError(
+            f"EASY-kald returnerede False for skade {skade_id}."
+        )
+    if any(
+        word in text
+        for word in (
+            "error",
+            "fejl",
+            "failed",
+            "mislykkedes",
+        )
+    ):
+        raise RuntimeError(
+            f"EASY-kald returnerede fejl for skade "
+            f"{skade_id}: {response!r}."
         )
 
 
@@ -1480,7 +1546,10 @@ def _normalize_skade_id(skade_id: int | str) -> int:
     return result
 
 
-def _normalize_skade_status(*, status: SkadeStatus | int) -> SkadeStatus:
+def _normalize_skade_status(
+    *,
+    status: SkadeStatus | int,
+) -> SkadeStatus:
     if isinstance(status, bool):
         raise TypeError("status må ikke være boolsk.")
     try:
@@ -1492,7 +1561,10 @@ def _normalize_skade_status(*, status: SkadeStatus | int) -> SkadeStatus:
         ) from error
 
 
-def _normalize_last_editing(*, last_editing: str) -> str:
+def _normalize_last_editing(
+    *,
+    last_editing: str,
+) -> str:
     if not isinstance(last_editing, str):
         raise TypeError("last_editing skal være tekst.")
     value = last_editing.strip()
@@ -1501,11 +1573,17 @@ def _normalize_last_editing(*, last_editing: str) -> str:
     try:
         datetime.fromisoformat(value)
     except ValueError as error:
-        raise ValueError("last_editing skal være et ISO-datoformat.") from error
+        raise ValueError(
+            "last_editing skal være et ISO-datoformat."
+        ) from error
     return value
 
 
-def _normalize_required_text(*, name: str, value: str) -> str:
+def _normalize_required_text(
+    *,
+    name: str,
+    value: str,
+) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{name} skal være tekst.")
     result = value.strip()
@@ -1545,12 +1623,19 @@ def _validate_list_parameters(
     if not isinstance(show_tree_data, bool):
         raise TypeError("show_tree_data skal være boolsk.")
     if created_year_from > created_year_to:
-        raise ValueError("created_year_from må ikke være større end created_year_to.")
+        raise ValueError(
+            "created_year_from må ikke være større "
+            "end created_year_to."
+        )
     if incident_year_from > incident_year_to:
-        raise ValueError("incident_year_from må ikke være større end incident_year_to.")
+        raise ValueError(
+            "incident_year_from må ikke være større "
+            "end incident_year_to."
+        )
 
 
 __all__ = [
+    "CREATE_COMMENT_ENDPOINT",
     "EASY_STATUS_AFSENDT_AFVENTER",
     "EASY_STATUS_GODKENDT",
     "SKADER_LISTE",
@@ -1565,6 +1650,7 @@ __all__ = [
     "opdater_skade_status",
     "opdater_skade_status_fra_seneste_data",
     "opret_dokument_fra_skabelon",
+    "opret_kommentar_paa_skade",
     "send_digital_post",
     "send_skade_til_easy",
     "vaelg_dokumentskabelon",
