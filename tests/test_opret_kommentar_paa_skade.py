@@ -3,48 +3,121 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from q_insubiz.api.auth_manager import InsubizAuthManager
 from q_insubiz.functionality.skader import opret_kommentar_paa_skade
 
 logger = logging.getLogger(__name__)
 
+DANSK_TIDSZONE = ZoneInfo("Europe/Copenhagen")
 
-def laes_testinput() -> tuple[int, str, str]:
-    """Læs og kontrollér skade-id, titel og kommentartekst."""
-    skade_id_tekst = input("Skade-id til test: ").strip()
-    if not skade_id_tekst.isdigit() or int(skade_id_tekst) <= 0:
+HOVEDDOKUMENT = "Robot - henlæggelsesbrev.pdf"
+BILAG = "Anmeldelse af arbejdsulykke - 202601494.pdf"
+
+
+def laes_skade_id() -> int:
+    """Læs og kontrollér skade-id fra terminalen."""
+    tekst = input("Skade-id til test: ").strip()
+
+    if not tekst.isdigit() or int(tekst) <= 0:
         raise ValueError("Skade-id skal være et positivt heltal.")
 
-    titel = input("Kommentarens titel: ").strip()
-    if not titel:
-        raise ValueError("Titlen må ikke være tom.")
+    return int(tekst)
 
-    kommentartekst = input("Kommentartekst: ").strip()
-    if not kommentartekst:
-        raise ValueError("Kommentarteksten må ikke være tom.")
 
-    return int(skade_id_tekst), titel, kommentartekst
+def byg_kommentar() -> tuple[str, str]:
+    """Returnér titel og kommentartekst."""
+    nu = datetime.now(DANSK_TIDSZONE)
+
+    titel = (
+        "Henlæggelsesbrev afsendt til borger d. "
+        f"{nu:%d-%m-%Y %H:%M}"
+    )
+    kommentartekst = (
+        f"Hoved dokument: {HOVEDDOKUMENT}\n"
+        f"Bilag: {BILAG}"
+    )
+
+    return titel, kommentartekst
+
+
+def kontroller_svar(
+    kommentar: dict,
+    *,
+    skade_id: int,
+    titel: str,
+    kommentartekst: str,
+) -> int:
+    """Kontrollér svaret og returnér kommentarens id."""
+    kommentar_id = kommentar.get("id")
+
+    if (
+        isinstance(kommentar_id, bool)
+        or not isinstance(kommentar_id, int)
+        or kommentar_id <= 0
+    ):
+        raise AssertionError("Svaret mangler et gyldigt kommentar-id.")
+
+    skade = kommentar.get("ibObject")
+    if not isinstance(skade, dict) or skade.get("id") != skade_id:
+        raise AssertionError(
+            f"Kommentar {kommentar_id} matcher ikke skade-id {skade_id}."
+        )
+
+    if kommentar.get("title") != titel:
+        raise AssertionError(
+            f"Titlen på kommentar {kommentar_id} matcher ikke."
+        )
+
+    body = kommentar.get("body")
+    if not isinstance(body, str):
+        raise AssertionError(
+            f"Kommentar {kommentar_id} mangler tekst i svaret."
+        )
+
+    # Kommentarfunktionen omdanner almindelig tekst til HTML.
+    forventet_html = (
+        "<p>"
+        + html.escape(kommentartekst).replace("\n", "<br>")
+        + "</p>"
+    )
+
+    if html.unescape(body) != html.unescape(forventet_html):
+        raise AssertionError(
+            "Den gemte tekst matcher ikke den forventede tekst. "
+            f"Kommentar-id: {kommentar_id}. "
+            "Kontrollér kommentaren i Insubiz før et nyt forsøg."
+        )
+
+    return kommentar_id
 
 
 async def test_opret_kommentar_paa_skade() -> None:
-    """Opret én kommentar og kontrollér Insubiz-svaret."""
-    skade_id, titel, kommentartekst = laes_testinput()
+    """Opret én kommentar efter manuel bekræftelse."""
+    skade_id = laes_skade_id()
+    titel, kommentartekst = byg_kommentar()
 
     print()
     print(f"Skade-id: {skade_id}")
     print(f"Titel: {titel}")
-    print(f"Tekst: {kommentartekst}")
-    print("OBS: Testen opretter en rigtig kommentar i Insubiz.")
+    print("Kommentar:")
+    print(kommentartekst)
+    print()
+    print(
+        "OBS: Dette opretter en rigtig kommentar. "
+        "Kontrollér, at brevet faktisk er sendt, "
+        "og at skade-id og filnavne er korrekte."
+    )
 
-    bekraeftelse = input(
-        "Skriv OPRET for at oprette kommentaren: "
-    ).strip()
+    bekraeftelse = input("Skriv OPRET for at fortsætte: ").strip()
     if bekraeftelse != "OPRET":
         print("Afbrudt. Ingen kommentar blev oprettet.")
         return
 
-    auth_manager = InsubizAuthManager(headless=False)
+    auth_manager = InsubizAuthManager(headless=True)
+
     try:
         request_context = await auth_manager.get_request_context()
 
@@ -55,47 +128,25 @@ async def test_opret_kommentar_paa_skade() -> None:
             kommentartekst=kommentartekst,
         )
 
-        kommentar_id = kommentar.get("id")
-        if kommentar.get("ibObject", {}).get("id") != skade_id:
-            raise AssertionError(
-                "Svaret indeholder ikke det forventede skade-id."
-            )
-        if kommentar.get("title") != titel:
-            raise AssertionError(
-                "Den gemte titel matcher ikke testens titel."
-            )
-
-        body = kommentar.get("body")
-        if not isinstance(body, str):
-            raise AssertionError(
-                "Svaret indeholder ikke en kommentartekst."
-            )
-
-        # Funktionen fra sidste svar sender almindelig tekst som HTML.
-        forventet_body = (
-            "<p>"
-            + html.escape(kommentartekst).replace("\n", "<br>")
-            + "</p>"
+        kommentar_id = kontroller_svar(
+            kommentar,
+            skade_id=skade_id,
+            titel=titel,
+            kommentartekst=kommentartekst,
         )
-        if html.unescape(body) != html.unescape(forventet_body):
-            raise AssertionError(
-                "Den gemte kommentartekst matcher ikke testens tekst. "
-                f"Kommentar-id: {kommentar_id}. "
-                "Kontrollér kommentaren manuelt før et nyt forsøg."
-            )
 
         print()
         print("TEST BESTÅET")
         print(f"Skade-id: {skade_id}")
         print(f"Kommentar-id: {kommentar_id}")
-        print(f"Gemt titel: {kommentar['title']}")
-        print(f"Gemt body: {body}")
+        print(f"Titel: {titel}")
+        print("Kommentar:")
+        print(kommentartekst)
 
     except Exception:
         logger.exception(
-            "Kommentartesten fejlede for skade-id %s. "
-            "Kontrollér, om kommentaren alligevel blev oprettet, "
-            "før testen køres igen.",
+            "Testen fejlede for skade-id %s. Kontrollér i Insubiz, "
+            "om kommentaren blev oprettet, før testen køres igen.",
             skade_id,
         )
         raise
