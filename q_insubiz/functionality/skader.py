@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from functools import wraps
 from datetime import datetime
 from typing import Any
 
@@ -14,6 +15,9 @@ from playwright.async_api import (
     TimeoutError as PlaywrightTimeoutError,
 )
 
+from q_haderslev_vbo.playwright.playwright_run_recorder import (
+    PlaywrightRunRecorder,
+)
 from q_insubiz.api.client import InsubizApiClient
 from q_insubiz.models import (
     SendSkadeTilEasyResultat,
@@ -29,6 +33,54 @@ logger = logging.getLogger(__name__)
 
 TIMEOUT_MS = 15_000
 UI_WAIT_MS = 1_500
+
+
+async def _tag_fejlscreenshot(
+    *,
+    recorder: PlaywrightRunRecorder | None,
+    page: Page | None,
+    navn: str,
+) -> None:
+    """Tager et best-effort fejlscreenshot uden at skjule den oprindelige fejl."""
+    if recorder is None or page is None or page.is_closed():
+        return
+    try:
+        await recorder.screenshot(page, navn, always=True)
+    except Exception as screenshot_error:  # noqa: BLE001
+        logger.warning(
+            "Fejlscreenshot kunne ikke gemmes. Navn: %s. Fejl: %s: %s.",
+            navn,
+            type(screenshot_error).__name__,
+            screenshot_error,
+        )
+
+
+def _med_recorder_fejlscreenshot(navn: str):
+    """Dekorerer en async UI-funktion med recorder-fejlscreenshot."""
+    def decorator(function):
+        @wraps(function)
+        async def wrapper(*args, **kwargs):
+            try:
+                return await function(*args, **kwargs)
+            except Exception:
+                recorder = kwargs.get("recorder")
+                page = kwargs.get("page")
+                if page is None:
+                    for value in (*args, *kwargs.values()):
+                        if isinstance(value, Page):
+                            page = value
+                            break
+                        if isinstance(value, Locator):
+                            page = value.page
+                            break
+                await _tag_fejlscreenshot(
+                    recorder=recorder,
+                    page=page,
+                    navn=navn,
+                )
+                raise
+        return wrapper
+    return decorator
 
 SKADER_LISTE_ENDPOINT = "/ImportExport/ExportIncidents"
 GET_INCIDENT_BY_ID_ENDPOINT = "/IncidentHandling/GetIncidentById"
@@ -585,7 +637,12 @@ async def _haandter_easy_sendefejl(
     ) from send_error
 
 
-async def klik_paa_skade(page: Page) -> None:
+@_med_recorder_fejlscreenshot("fejl_klik_paa_skade")
+async def klik_paa_skade(
+    page: Page,
+    *,
+    recorder: PlaywrightRunRecorder | None = None,
+) -> None:
     """Åbner Skade med kontrollerede fallbacks."""
     if page.is_closed():
         raise RuntimeError("Skade kunne ikke åbnes, fordi siden er lukket.")
@@ -622,7 +679,12 @@ async def klik_paa_skade(page: Page) -> None:
     await page.wait_for_timeout(UI_WAIT_MS)
 
 
-async def opret_dokument_fra_skabelon(page: Page) -> Locator:
+@_med_recorder_fejlscreenshot("fejl_opret_dokument_fra_skabelon")
+async def opret_dokument_fra_skabelon(
+    page: Page,
+    *,
+    recorder: PlaywrightRunRecorder | None = None,
+) -> Locator:
     """Åbner og returnerer dokumentdialogen."""
     button = page.locator(SkadeSelectors.aabn_dokumentdialog).first
     await button.wait_for(state="visible", timeout=TIMEOUT_MS)
@@ -644,10 +706,13 @@ async def opret_dokument_fra_skabelon(page: Page) -> Locator:
     return dialog
 
 
+@_med_recorder_fejlscreenshot("fejl_vaelg_dokumentskabelon")
 async def vaelg_dokumentskabelon(
     page: Page,
     dialog: Locator,
     skabelon_navn: str,
+    *,
+    recorder: PlaywrightRunRecorder | None = None,
 ) -> str:
     """Vælger og returnerer en dokumentskabelon."""
     normalized_name = _normalize_required_text(
@@ -692,9 +757,12 @@ async def vaelg_dokumentskabelon(
     return selected_text
 
 
+@_med_recorder_fejlscreenshot("fejl_gem_dokument_fra_skabelon")
 async def gem_dokument_fra_skabelon(
     page: Page,
     dialog: Locator,
+    *,
+    recorder: PlaywrightRunRecorder | None = None,
 ) -> None:
     """Gemmer dokumentet og venter på lukket dialog."""
     gem_knap = dialog.locator(SkadeSelectors.GEM_DOKUMENT_KNAP).first
@@ -706,7 +774,12 @@ async def gem_dokument_fra_skabelon(
     await page.wait_for_timeout(UI_WAIT_MS)
 
 
-async def download_easy_rapport_og_gem_i_mappe(page: Page) -> None:
+@_med_recorder_fejlscreenshot("fejl_download_easy_rapport")
+async def download_easy_rapport_og_gem_i_mappe(
+    page: Page,
+    *,
+    recorder: PlaywrightRunRecorder | None = None,
+) -> None:
     """Opretter Easy-rapport og gemmer den i mappen."""
     tre_prik_knapper = page.locator(
         SkadeSelectors.TRE_PRIK_MENU_KNAP
@@ -783,6 +856,7 @@ async def download_easy_rapport_og_gem_i_mappe(page: Page) -> None:
     await page.wait_for_timeout(UI_WAIT_MS)
 
 
+@_med_recorder_fejlscreenshot("fejl_send_digital_post")
 async def send_digital_post(
     page: Page,
     *,
@@ -792,12 +866,14 @@ async def send_digital_post(
     hoveddokument_navn: str,
     bilag_navn: str,
     test: bool = False,
+    recorder: PlaywrightRunRecorder | None = None,
 ) -> dict[str, Any]:
     """Udfylder digital post, vedhæfter dokumenterne og sender.
 
     Når test er True, udfyldes og kontrolleres formularen,
     men Send-knappen bliver ikke klikket. Standardværdien
     er False, så funktionen sender som udgangspunkt.
+    recorder bruges til fejlscreenshots med always=True.
     """
     if not isinstance(test, bool):
         raise TypeError("test skal være True eller False.")
@@ -823,7 +899,10 @@ async def send_digital_post(
             value=bilag_navn,
         ),
     }
-    dialog = await _aabn_send_digital_post_dialog(page=page)
+    dialog = await _aabn_send_digital_post_dialog(
+        page=page,
+        recorder=recorder,
+    )
     await _fill_and_verify(
         field=dialog.locator(SkadeSelectors.CPR_INPUT).first,
         value=values["cpr_nummer"],
@@ -838,6 +917,7 @@ async def send_digital_post(
         page=page,
         dialog=dialog,
         forsendelsestype=values["forsendelsestype"],
+        recorder=recorder,
     )
     hoved_rows, faktisk_hoveddokument = (
         await _aabn_og_vedhaeft_dokument(
@@ -846,6 +926,7 @@ async def send_digital_post(
             knap_selector=SkadeSelectors.HOVEDDOKUMENT_KNAP,
             dokument_navn=values["hoveddokument"],
             dokumenttype="hoveddokument",
+            recorder=recorder,
         )
     )
     bilag_rows, faktisk_bilag = await _aabn_og_vedhaeft_dokument(
@@ -854,6 +935,7 @@ async def send_digital_post(
         knap_selector=SkadeSelectors.BILAG_KNAP,
         dokument_navn=values["bilag"],
         dokumenttype="bilag",
+        recorder=recorder,
     )
     sendt = False
     if test:
@@ -865,6 +947,7 @@ async def send_digital_post(
         await _klik_send_digital_post(
             page=page,
             dialog=dialog,
+            recorder=recorder,
         )
         sendt = True
     return {
@@ -881,7 +964,12 @@ async def send_digital_post(
     }
 
 
-async def _aabn_send_digital_post_dialog(*, page: Page) -> Locator:
+@_med_recorder_fejlscreenshot("fejl_aabn_send_digital_post_dialog")
+async def _aabn_send_digital_post_dialog(
+    *,
+    page: Page,
+    recorder: PlaywrightRunRecorder | None = None,
+) -> Locator:
     button = page.locator(SkadeSelectors.SEND_DIGITAL_POST_KNAP).first
     await button.wait_for(state="visible", timeout=TIMEOUT_MS)
     await button.scroll_into_view_if_needed()
@@ -901,11 +989,13 @@ async def _aabn_send_digital_post_dialog(*, page: Page) -> Locator:
     return dialog
 
 
+@_med_recorder_fejlscreenshot("fejl_vaelg_forsendelsestype")
 async def _vaelg_forsendelsestype(
     *,
     page: Page,
     dialog: Locator,
     forsendelsestype: str,
+    recorder: PlaywrightRunRecorder | None = None,
 ) -> None:
     """Åbner dokumenttype-dropdownen og vælger værdien."""
     wrapper = dialog.locator(
@@ -947,6 +1037,7 @@ async def _vaelg_forsendelsestype(
         )
 
 
+@_med_recorder_fejlscreenshot("fejl_vedhaeft_dokument")
 async def _aabn_og_vedhaeft_dokument(
     *,
     page: Page,
@@ -954,6 +1045,7 @@ async def _aabn_og_vedhaeft_dokument(
     knap_selector: str,
     dokument_navn: str,
     dokumenttype: str,
+    recorder: PlaywrightRunRecorder | None = None,
 ) -> tuple[list[str], str]:
     """Vælger, vedhæfter og kontrollerer et dokument."""
     button = send_dialog.locator(knap_selector).first
@@ -1062,10 +1154,12 @@ async def _kontroller_vedhaeftet_chip(
     )
 
 
+@_med_recorder_fejlscreenshot("fejl_klik_send_digital_post")
 async def _klik_send_digital_post(
     *,
     page: Page,
     dialog: Locator,
+    recorder: PlaywrightRunRecorder | None = None,
 ) -> None:
     """Klikker på Send og venter på, at dialogen lukker."""
     send_button = dialog.locator(SkadeSelectors.SEND_KNAP).last
