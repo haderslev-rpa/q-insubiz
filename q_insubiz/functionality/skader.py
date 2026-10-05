@@ -1206,7 +1206,7 @@ async def marker_dokument(
     dokumentvaelger: Locator,
     dokument_navn: str,
 ) -> str:
-    """Finder dokumentrækken og markerer dokumentet i Insubiz."""
+    """Markér ét dokument og bekræft valgkontrollens synlige tilstand."""
     normalized_document_name = _normalize_required_text(
         name="dokument_navn",
         value=dokument_navn,
@@ -1253,15 +1253,14 @@ async def marker_dokument(
     filename, actual_name = selected_document
     row = filename.locator("xpath=ancestor::tr[1]")
 
-    checkbox = row.locator(
-        SkadeSelectors.DOKUMENT_CHECKBOX
-    ).first
+    # Afgræns kontrollen til præcis den række, der har det fundne filnavn.
+    control = row.locator(".v-selection-control").first
     wrapper = row.locator(
         SkadeSelectors.CHECKBOX_WRAPPER
     ).first
 
-    await checkbox.wait_for(
-        state="attached",
+    await control.wait_for(
+        state="visible",
         timeout=TIMEOUT_MS,
     )
     await wrapper.wait_for(
@@ -1269,85 +1268,34 @@ async def marker_dokument(
         timeout=TIMEOUT_MS,
     )
 
-    if await checkbox.is_checked():
-        logger.info(
-            "Dokument var allerede markeret: %s. Input: %s.",
-            actual_name,
-            normalized_document_name,
-        )
-        return actual_name
-
-    klik_udfoert = False
-
-    try:
-        await wrapper.click(
-            force=True,
-            timeout=3_000,
-        )
-        klik_udfoert = True
-    except (PlaywrightTimeoutError, PlaywrightError) as error:
-        logger.debug(
-            "Klik på checkbox-wrapper fejlede. "
-            "Forsøger klik på dokumentrækken. "
-            "Dokument: %s.",
-            actual_name,
-            exc_info=error,
-        )
-
-    if not await checkbox.is_checked():
-        try:
-            await filename.click(
-                force=True,
-                timeout=3_000,
-            )
-            klik_udfoert = True
-        except (PlaywrightTimeoutError, PlaywrightError) as error:
-            logger.debug(
-                "Klik på dokumentnavnet fejlede. "
-                "Forsøger JavaScript-klik på wrapperen. "
-                "Dokument: %s.",
-                actual_name,
-                exc_info=error,
-            )
-
-    if not await checkbox.is_checked():
-        try:
-            await wrapper.evaluate(
-                "element => element.click()"
-            )
-            klik_udfoert = True
-        except PlaywrightError as error:
-            logger.debug(
-                "JavaScript-klik på checkbox-wrapper fejlede. "
-                "Dokument: %s.",
-                actual_name,
-                exc_info=error,
-            )
-
-    if await checkbox.is_checked():
-        logger.info(
-            "Dokument markeret og checkbox-status bekræftet: "
-            "%s. Input: %s.",
-            actual_name,
-            normalized_document_name,
-        )
-        return actual_name
-
-    if klik_udfoert:
-        logger.warning(
-            "Insubiz modtog klik på dokumentet, men checkboxens "
-            "tekniske checked-status blev ikke opdateret. "
-            "Flowet fortsætter, så den efterfølgende kontrol kan "
-            "bekræfte den faktiske vedhæftning. Dokument: %s.",
-            actual_name,
-        )
-        return actual_name
-
-    raise RuntimeError(
-        "Dokumentet blev fundet, men kunne ikke markeres. "
-        f"Dokument: {actual_name!r}."
+    # Vuetifys markerede tilstand på den synlige valgkontrol.
+    marked_control = row.locator(
+        ".v-selection-control.v-selection-control--dirty"
     )
 
+    if await marked_control.count() == 0:
+        # Ét klik på den synlige kontrol, ikke på det skjulte input
+        # og ikke efterfølgende klik på filnavn eller række.
+        await wrapper.click(timeout=TIMEOUT_MS)
+
+        try:
+            await marked_control.wait_for(
+                state="visible",
+                timeout=TIMEOUT_MS,
+            )
+        except PlaywrightTimeoutError as error:
+            raise RuntimeError(
+                "Dokumentet blev fundet, men valgkontrollen viste "
+                "ikke en bekræftet markering efter klik. "
+                "Vedhæft er derfor ikke klikket. "
+                f"Dokument: {actual_name!r}."
+            ) from error
+
+    logger.info(
+        "Synlig dokumentmarkering bekræftet: %s.",
+        actual_name,
+    )
+    return actual_name
 
 async def page_wait_for_checkbox(*, checkbox: Locator) -> None:
     """Venter på, at dokumentcheckboxen bliver markeret."""
