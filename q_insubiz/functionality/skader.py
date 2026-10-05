@@ -15,6 +15,10 @@ from playwright.async_api import (
     TimeoutError as PlaywrightTimeoutError,
 )
 
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Locator
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
 from q_haderslev_vbo.playwright.playwright_run_recorder import (
     PlaywrightRunRecorder,
 )
@@ -1202,11 +1206,12 @@ async def marker_dokument(
     dokumentvaelger: Locator,
     dokument_navn: str,
 ) -> str:
-    """Finder dokumentrækken og markerer checkboxen."""
+    """Finder dokumentrækken og markerer dokumentet i Insubiz."""
     normalized_document_name = _normalize_required_text(
         name="dokument_navn",
         value=dokument_navn,
     )
+
     documents = dokumentvaelger.locator(
         SkadeSelectors.DOKUMENTNAVN
     )
@@ -1214,76 +1219,134 @@ async def marker_dokument(
         state="visible",
         timeout=TIMEOUT_MS,
     )
+
     available_documents: list[tuple[Locator, str]] = []
+
     for index in range(await documents.count()):
         document = documents.nth(index)
+
         if not await document.is_visible():
             continue
+
         title = await document.get_attribute("title")
-        actual_name = (title or await document.inner_text()).strip()
+        actual_name = (
+            title or await document.inner_text()
+        ).strip()
+
         if actual_name:
-            available_documents.append((document, actual_name))
+            available_documents.append(
+                (document, actual_name)
+            )
+
     selected_document = _find_document_match(
         documents=available_documents,
         requested_name=normalized_document_name,
     )
+
     if selected_document is None:
         raise RuntimeError(
             f"Dokumentet {normalized_document_name!r} blev ikke fundet. "
             "Tilgængelige dokumenter: "
             f"{[name for _, name in available_documents]!r}."
         )
+
     filename, actual_name = selected_document
     row = filename.locator("xpath=ancestor::tr[1]")
+
     checkbox = row.locator(
         SkadeSelectors.DOKUMENT_CHECKBOX
     ).first
-    await checkbox.wait_for(state="attached", timeout=TIMEOUT_MS)
-    if not await checkbox.is_checked():
-        wrapper = row.locator(
-            SkadeSelectors.CHECKBOX_WRAPPER
-        ).first
-        await wrapper.wait_for(
-            state="visible",
-            timeout=TIMEOUT_MS,
+    wrapper = row.locator(
+        SkadeSelectors.CHECKBOX_WRAPPER
+    ).first
+
+    await checkbox.wait_for(
+        state="attached",
+        timeout=TIMEOUT_MS,
+    )
+    await wrapper.wait_for(
+        state="visible",
+        timeout=TIMEOUT_MS,
+    )
+
+    if await checkbox.is_checked():
+        logger.info(
+            "Dokument var allerede markeret: %s. Input: %s.",
+            actual_name,
+            normalized_document_name,
         )
+        return actual_name
+
+    klik_udfoert = False
+
+    try:
+        await wrapper.click(
+            force=True,
+            timeout=3_000,
+        )
+        klik_udfoert = True
+    except (PlaywrightTimeoutError, PlaywrightError) as error:
+        logger.debug(
+            "Klik på checkbox-wrapper fejlede. "
+            "Forsøger klik på dokumentrækken. "
+            "Dokument: %s.",
+            actual_name,
+            exc_info=error,
+        )
+
+    if not await checkbox.is_checked():
         try:
-            await checkbox.check(force=True, timeout=3_000)
-        except PlaywrightTimeoutError as error:
+            await filename.click(
+                force=True,
+                timeout=3_000,
+            )
+            klik_udfoert = True
+        except (PlaywrightTimeoutError, PlaywrightError) as error:
             logger.debug(
-                "Direkte markering af dokumentcheckbox fik timeout. "
-                "Forsøger checkbox-wrapper som fallback.",
+                "Klik på dokumentnavnet fejlede. "
+                "Forsøger JavaScript-klik på wrapperen. "
+                "Dokument: %s.",
+                actual_name,
                 exc_info=error,
             )
-        if not await checkbox.is_checked():
-            try:
-                await wrapper.click(force=True, timeout=3_000)
-            except PlaywrightTimeoutError as error:
-                logger.debug(
-                    "Klik på checkbox-wrapper fik timeout. "
-                    "Forsøger JavaScript-klik som fallback.",
-                    exc_info=error,
-                )
-        if not await checkbox.is_checked():
-            await checkbox.evaluate("element => element.click()")
-        try:
-            await page_wait_for_checkbox(checkbox=checkbox)
-        except PlaywrightTimeoutError as error:
-            raise RuntimeError(
-                "Dokumentets checkbox blev ikke markeret. "
-                f"Dokument: {actual_name!r}."
-            ) from error
+
     if not await checkbox.is_checked():
-        raise RuntimeError(
-            "Dokumentet blev fundet, men checkboxen blev "
-            f"ikke markeret. Dokument: {actual_name!r}."
+        try:
+            await wrapper.evaluate(
+                "element => element.click()"
+            )
+            klik_udfoert = True
+        except PlaywrightError as error:
+            logger.debug(
+                "JavaScript-klik på checkbox-wrapper fejlede. "
+                "Dokument: %s.",
+                actual_name,
+                exc_info=error,
+            )
+
+    if await checkbox.is_checked():
+        logger.info(
+            "Dokument markeret og checkbox-status bekræftet: "
+            "%s. Input: %s.",
+            actual_name,
+            normalized_document_name,
         )
-    logger.info(
-        "Dokument markeret: %s. Input: %s.",
-        actual_name,
-        normalized_document_name,
+        return actual_name
+
+    if klik_udfoert:
+        logger.warning(
+            "Insubiz modtog klik på dokumentet, men checkboxens "
+            "tekniske checked-status blev ikke opdateret. "
+            "Flowet fortsætter, så den efterfølgende kontrol kan "
+            "bekræfte den faktiske vedhæftning. Dokument: %s.",
+            actual_name,
+        )
+        return actual_name
+
+    raise RuntimeError(
+        "Dokumentet blev fundet, men kunne ikke markeres. "
+        f"Dokument: {actual_name!r}."
     )
-    return actual_name
 
 
 async def page_wait_for_checkbox(*, checkbox: Locator) -> None:

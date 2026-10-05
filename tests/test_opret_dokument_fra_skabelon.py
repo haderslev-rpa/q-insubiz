@@ -31,7 +31,7 @@ HEADLESS = False
 
 BASE_URL = "https://start.insubiz.dk"
 
-SKADE_ID: int | str = 2491158
+SKADE_ID: int | str = 2491803
 
 SKABELON_NAVN = "Robot - Henlæggelsesbrev"
 
